@@ -86,7 +86,10 @@ async function editFile(context: GuardedToolContext, pathPolicy: PathPolicy, arg
   const resolved = await resolveFilePath(context, pathPolicy, argumentsValue, true);
   if ("ok" in resolved) return resolved;
   const { filePath, after } = resolved;
-  if (after === undefined) return denied("content must be a string", "invalid_arguments");
+  if (after === undefined) {
+    audit(context, "file", "denied", { reason: "invalid_arguments", path: filePath });
+    return denied("content must be a string", "invalid_arguments");
+  }
   const beforeResult = await readBefore(context.tree, filePath);
   if ("error" in beforeResult) {
     audit(context, "file", "denied", { reason: "read_failed", path: filePath, message: beforeResult.error });
