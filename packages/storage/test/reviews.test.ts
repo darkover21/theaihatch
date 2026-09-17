@@ -55,6 +55,18 @@ describe("safety audit persistence", () => {
     audit.close();
   });
 
+  it("redacts configured values that require JSON escaping", async () => {
+    const directory = await createDirectory();
+    const secret = "line\n\"quoted\"\\path";
+    const audit = new SafetyAuditRepository(directory, [secret]);
+
+    audit.record({ runId: "run-1", action: "provider", decision: "denied", detail: JSON.stringify({ credential: secret }) });
+
+    const detail = audit.list("run-1")[0]?.detail ?? "{}";
+    audit.close();
+    expect(JSON.parse(detail)).toEqual({ credential: "[REDACTED]" });
+  });
+
   it("redacts sensitive JSON keys even when their values are not configured", async () => {
     const directory = await createDirectory();
     const audit = new SafetyAuditRepository(directory);

@@ -14,16 +14,20 @@ export class SafetyAuditRepository {
 export function redactDetail(detail: string, forbiddenValues: readonly string[]): string {
   let redacted = detail;
   try {
-    redacted = JSON.stringify(redactJson(JSON.parse(detail) as unknown)) ?? detail;
+    redacted = JSON.stringify(redactJson(JSON.parse(detail) as unknown, forbiddenValues)) ?? detail;
   } catch {
     // Preserve non-JSON detail while still removing configured values.
   }
-  for (const value of forbiddenValues) if (value.length > 0) redacted = redacted.split(value).join("[REDACTED]");
-  return redacted;
+  return replaceForbiddenValues(redacted, forbiddenValues);
 }
 
-function redactJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactJson);
-  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, /^(apiKey|secret|token|authorization)$/iu.test(key) ? "[REDACTED]" : redactJson(child)]));
+function redactJson(value: unknown, forbiddenValues: readonly string[]): unknown {
+  if (Array.isArray(value)) return value.map((child) => redactJson(child, forbiddenValues));
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, /^(apiKey|secret|token|authorization)$/iu.test(key) ? "[REDACTED]" : redactJson(child, forbiddenValues)]));
+  if (typeof value === "string") return replaceForbiddenValues(value, forbiddenValues);
   return value;
+}
+
+function replaceForbiddenValues(value: string, forbiddenValues: readonly string[]): string {
+  return forbiddenValues.reduce((redacted, forbiddenValue) => forbiddenValue.length === 0 ? redacted : redacted.split(forbiddenValue).join("[REDACTED]"), value);
 }
