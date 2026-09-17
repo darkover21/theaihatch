@@ -33,7 +33,7 @@ async function fixture(options: { dryRun?: boolean; reviewMode?: boolean } = {})
   const reviews = new ReviewRepository(data);
   const audits = new SafetyAuditRepository(data);
   closers.push(() => reviews.close(), () => audits.close());
-  const tools = await createGuardedWorkspaceTools({ operationId: "operation-1", tree, writer, dryRun: options.dryRun ?? false, reviewMode: options.reviewMode ?? false, approvals, reviews, audits, reviewGate: new ReviewGate(), proposals });
+  const tools = await createGuardedWorkspaceTools({ operationId: "operation-1", checkpointId: "checkpoint-1", tree, writer, dryRun: options.dryRun ?? false, reviewMode: options.reviewMode ?? false, approvals, reviews, audits, reviewGate: new ReviewGate(), proposals });
   const tool = (name: string) => {
     const found = tools.find((candidate) => candidate.name === name);
     if (found === undefined) throw new Error(`missing tool: ${name}`);
@@ -68,6 +68,19 @@ describe("guarded workspace tools", () => {
     expect(context.audits.list("operation-1")).toEqual([expect.objectContaining({ action: "command", decision: "denied" })]);
   });
 
+  it("REQ-SAF-001: rejects a new file below a symlink that escapes the workspace", async () => {
+    const context = await fixture({ dryRun: true });
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "theaihatch-guarded-outside-"));
+    temporaryDirectories.push(outside);
+    await fs.symlink(outside, path.join(context.root, "escape"), "junction");
+
+    await expect(context.tool("edit_file").execute({ path: "escape/new.ts", content: "after" }, signal)).resolves.toMatchObject({ ok: false, errorCode: "path_denied" });
+
+    await expect(fs.access(path.join(outside, "new.ts"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(context.proposals.actions).toEqual([]);
+    expect(context.audits.list("operation-1")).toEqual([expect.objectContaining({ action: "file", decision: "denied" })]);
+  });
+
   it("REQ-REV-002 and REQ-REV-003: writes an accepted reviewed edit after persisting its snapshot", async () => {
     const context = await fixture({ reviewMode: true });
     const pending = context.tool("edit_file").execute({ path: "a.ts", content: "after" }, signal);
@@ -78,11 +91,33 @@ describe("guarded workspace tools", () => {
     const snapshotId = approval.snapshotId;
     const snapshot = context.reviews.listSnapshots("operation-1")[0];
     if (snapshot === undefined) throw new Error("missing persisted review");
+    expect(snapshot.checkpointId).toBe("checkpoint-1");
     context.approvals.resolveReview("operation-1", snapshot.files[0]?.hunks.map((hunk) => ({ hunkId: hunk.id, decision: "accepted", actor: "user" })) ?? []);
 
     await expect(pending).resolves.toMatchObject({ ok: true, content: expect.objectContaining({ snapshotId }) });
     expect(await context.tree.readFile("a.ts")).toBe("after");
     expect(context.reviews.listSnapshots("operation-1")[0]?.decisions).toEqual([expect.objectContaining({ decision: "accepted" })]);
+  });
+
+  it("REQ-SAF-001: returns a controlled denial when the requested edit target is a directory", async () => {
+    const context = await fixture();
+    await fs.mkdir(path.join(context.root, "directory"));
+
+    await expect(context.tool("edit_file").execute({ path: "directory", content: "after" }, signal)).resolves.toMatchObject({ ok: false, errorCode: "read_failed" });
+
+    expect(context.audits.list("operation-1")).toEqual([expect.objectContaining({ action: "file", decision: "denied", detail: expect.stringContaining("read_failed") })]);
+  });
+
+  it("REQ-SAF-007: audits no-op and invalid edit inputs as controlled denials", async () => {
+    const context = await fixture();
+
+    await expect(context.tool("edit_file").execute({ path: "a.ts", content: "before" }, signal)).resolves.toMatchObject({ ok: false, errorCode: "no_change" });
+    await expect(context.tool("edit_file").execute({ path: "a.ts" }, signal)).resolves.toMatchObject({ ok: false, errorCode: "invalid_arguments" });
+
+    expect(context.audits.list("operation-1")).toEqual([
+      expect.objectContaining({ action: "file", decision: "denied", detail: expect.stringContaining("no_change") }),
+      expect.objectContaining({ action: "file", decision: "denied", detail: expect.stringContaining("invalid_arguments") })
+    ]);
   });
 
   it("REQ-REV-004: returns rejected review feedback without writing the proposed edit", async () => {

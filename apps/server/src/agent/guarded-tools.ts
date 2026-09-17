@@ -1,6 +1,6 @@
 import type { AgentTool, AgentToolResult, ReviewGate } from "@theaihatch/agent";
 import { diffFile, type FileDiff, type ReviewHunk } from "@theaihatch/review";
-import { classifyCommand, createShellPolicy, DryRunRecorder } from "@theaihatch/safety";
+import { classifyCommand, createPathPolicy, createShellPolicy, DryRunRecorder, type PathPolicy } from "@theaihatch/safety";
 import { ReviewRepository, SafetyAuditRepository } from "@theaihatch/storage";
 import { WorkspaceTree } from "@theaihatch/workspace";
 import type { SesWriter } from "../ses.js";
@@ -11,6 +11,7 @@ import { hashContent, objectArguments, recordCommittedEdit, stringArgument } fro
 
 export interface GuardedToolContext {
   operationId: string;
+  checkpointId: string;
   tree: WorkspaceTree;
   writer: SesWriter;
   dryRun: boolean;
@@ -44,21 +45,59 @@ async function appendDiffMarkers(context: GuardedToolContext, diff: FileDiff): P
   }
 }
 
-async function readBefore(tree: WorkspaceTree, filePath: string): Promise<{ before: string; created: boolean }> {
-  try { return { before: await tree.readFile(filePath), created: false }; } catch { return { before: "", created: true }; }
+async function readBefore(tree: WorkspaceTree, filePath: string): Promise<{ before: string; created: boolean } | { error: string }> {
+  try { return { before: await tree.readFile(filePath), created: false }; } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { before: "", created: true };
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
-async function editFile(context: GuardedToolContext, argumentsValue: unknown): Promise<AgentToolResult> {
-  const argumentsObject = objectArguments(argumentsValue);
+async function resolveFilePath(context: GuardedToolContext, pathPolicy: PathPolicy, argumentsValue: unknown, contentRequired: boolean): Promise<{ filePath: string; after?: string } | AgentToolResult> {
+  let argumentsObject: Record<string, unknown>;
+  let requestedPath: string;
+  let after: string | undefined;
+  try {
+    argumentsObject = objectArguments(argumentsValue);
+    requestedPath = stringArgument(argumentsObject, "path");
+    if (contentRequired) after = stringArgument(argumentsObject, "content");
+  } catch (error) {
+    audit(context, "file", "denied", { reason: "invalid_arguments" });
+    return denied(error instanceof Error ? error.message : String(error), "invalid_arguments");
+  }
   let filePath: string;
-  try { filePath = context.tree.normalize(stringArgument(argumentsObject, "path")); } catch (error) {
-    audit(context, "file", "denied", { reason: "path_denied", path: argumentsObject.path });
+  try { filePath = context.tree.normalize(await pathPolicy.resolve(requestedPath)); } catch (error) {
+    audit(context, "file", "denied", { reason: "path_denied", path: requestedPath });
     return denied(error instanceof Error ? error.message : String(error), "path_denied");
   }
-  const after = stringArgument(argumentsObject, "content");
-  const { before, created } = await readBefore(context.tree, filePath);
+  return { filePath, ...(after === undefined ? {} : { after }) };
+}
+
+async function readFile(context: GuardedToolContext, pathPolicy: PathPolicy, argumentsValue: unknown): Promise<AgentToolResult> {
+  const resolved = await resolveFilePath(context, pathPolicy, argumentsValue, false);
+  if ("ok" in resolved) return resolved;
+  try { return { ok: true, content: await context.tree.readFile(resolved.filePath) }; } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    audit(context, "file", "denied", { reason: "read_failed", path: resolved.filePath, message });
+    return denied(message, "read_failed");
+  }
+}
+
+async function editFile(context: GuardedToolContext, pathPolicy: PathPolicy, argumentsValue: unknown): Promise<AgentToolResult> {
+  const resolved = await resolveFilePath(context, pathPolicy, argumentsValue, true);
+  if ("ok" in resolved) return resolved;
+  const { filePath, after } = resolved;
+  if (after === undefined) return denied("content must be a string", "invalid_arguments");
+  const beforeResult = await readBefore(context.tree, filePath);
+  if ("error" in beforeResult) {
+    audit(context, "file", "denied", { reason: "read_failed", path: filePath, message: beforeResult.error });
+    return denied(beforeResult.error, "read_failed");
+  }
+  const { before, created } = beforeResult;
   const diff = diffFile(filePath, before, after);
-  if (diff.hunks.length === 0) return denied("edit contains no change", "no_change");
+  if (diff.hunks.length === 0) {
+    audit(context, "file", "denied", { reason: "no_change", path: filePath });
+    return denied("edit contains no change", "no_change");
+  }
   await appendDiffMarkers(context, diff);
   if (context.dryRun) {
     context.proposals.file(filePath, "edit proposed");
@@ -68,7 +107,7 @@ async function editFile(context: GuardedToolContext, argumentsValue: unknown): P
 
   let snapshotId: string | undefined;
   if (context.reviewMode) {
-    const snapshot = context.reviews.createSnapshot({ runId: context.operationId, checkpointId: context.operationId, files: [diff] });
+    const snapshot = context.reviews.createSnapshot({ runId: context.operationId, checkpointId: context.checkpointId, files: [diff] });
     snapshotId = snapshot.id;
     const decisions = await context.approvals.requestReview({ operationId: context.operationId, snapshotId, hunks: snapshot.files.flatMap((file) => file.hunks) });
     context.reviews.resolveSnapshot(snapshotId, decisions);
@@ -82,14 +121,22 @@ async function editFile(context: GuardedToolContext, argumentsValue: unknown): P
     audit(context, "file", "approved", { path: filePath, snapshotId, decisions });
   }
 
-  await context.tree.writeFile(filePath, after);
+  try { await context.tree.writeFile(filePath, after); } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    audit(context, "file", "denied", { reason: "write_failed", path: filePath, message });
+    return denied(message, "write_failed");
+  }
   await recordCommittedEdit(context.writer, { path: filePath, before, after, created });
   return { ok: true, content: { path: filePath, contentHash: hashContent(after), ...(snapshotId === undefined ? {} : { snapshotId }) } };
 }
 
 async function runCommand(context: GuardedToolContext, argumentsValue: unknown): Promise<AgentToolResult> {
-  const argumentsObject = objectArguments(argumentsValue);
-  const command = stringArgument(argumentsObject, "command");
+  let argumentsObject: Record<string, unknown>;
+  let command: string;
+  try { argumentsObject = objectArguments(argumentsValue); command = stringArgument(argumentsObject, "command"); } catch (error) {
+    audit(context, "command", "denied", { reason: "invalid_arguments" });
+    return denied(error instanceof Error ? error.message : String(error), "invalid_arguments");
+  }
   const requestedCwd = typeof argumentsObject.cwd === "string" ? argumentsObject.cwd : ".";
   const shellPolicy = await createShellPolicy(context.tree.root.canonicalPath);
   let cwd: string;
@@ -117,9 +164,10 @@ async function runCommand(context: GuardedToolContext, argumentsValue: unknown):
 }
 
 export async function createGuardedWorkspaceTools(context: GuardedToolContext): Promise<AgentTool[]> {
+  const pathPolicy = await createPathPolicy(context.tree.root.canonicalPath);
   return [
-    { name: "read_file", execute: async (argumentsValue): Promise<AgentToolResult> => ({ ok: true, content: await context.tree.readFile(context.tree.normalize(stringArgument(objectArguments(argumentsValue), "path"))) }) },
-    { name: "edit_file", execute: (argumentsValue) => editFile(context, argumentsValue) },
+    { name: "read_file", execute: (argumentsValue) => readFile(context, pathPolicy, argumentsValue) },
+    { name: "edit_file", execute: (argumentsValue) => editFile(context, pathPolicy, argumentsValue) },
     { name: "run_command", execute: (argumentsValue) => runCommand(context, argumentsValue) }
   ];
 }
