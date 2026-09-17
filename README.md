@@ -20,6 +20,18 @@ npm run test
 npm run build
 ```
 
+## Phase 2 workspace and terminal demo
+
+Run the API host and Vite UI in separate terminals:
+
+```sh
+npm install
+npm run dev --workspace @theaihatch/server
+npm run dev --workspace @theaihatch/web
+```
+
+Open the Vite URL, enter a local folder in **Open local folder**, expand the ignored-aware explorer, open files in model-backed tabs, and choose **Run scripted demo**. The demo writes a workspace file, records a streamed command and output as SES events, and displays the replayable terminal stream without an API key or model call.
+
 The rest of this file documents the planning hand-off that produced the Phase 1 contract.
 
 Codex writes the specs and plan (cheap pass). Gemini writes the code (expensive pass). Splitting them keeps the expensive model from burning tokens on architecture it would have to redo anyway.

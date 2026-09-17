@@ -8,11 +8,12 @@ export default defineConfig({
       "@theaihatch/ses": path.resolve("packages/ses/src/index.ts"),
       "@theaihatch/playback": path.resolve("packages/playback/src/index.ts"),
       "@theaihatch/typing-sim": path.resolve("packages/typing-sim/src/index.ts"),
-      "@theaihatch/storage": path.resolve("packages/storage/src/index.ts")
+      "@theaihatch/storage": path.resolve("packages/storage/src/index.ts"),
+      "@theaihatch/workspace": path.resolve("packages/workspace/src/index.ts")
     }
   },
   test: {
     environment: "node",
-    include: ["packages/**/test/**/*.test.ts"]
+    include: ["packages/**/test/**/*.test.ts", "apps/**/test/**/*.test.ts"]
   }
 });

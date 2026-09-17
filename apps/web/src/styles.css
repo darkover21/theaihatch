@@ -15,6 +15,16 @@ button { color: inherit; border: 0; cursor: pointer; }
 .activity-button.active, .activity-button:hover { color: #e9edf8; }
 .activity-spacer { flex: 1; }
 .explorer-panel { background: #141922; border-right: 1px solid #29313e; overflow: auto; }
+.workspace-explorer-shell { display: flex; flex-direction: column; min-height: 0; background: #141922; border-right: 1px solid #29313e; overflow: hidden; }
+.workspace-explorer-shell .explorer-panel { min-height: 0; border-right: 0; }
+.workspace-opener { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-bottom: 1px solid #29313e; color: #9ba8bb; font-size: 11px; }
+.workspace-opener input { min-width: 0; padding: 6px 7px; border: 1px solid #344156; border-radius: 4px; background: #1c2533; color: #d6e0ef; font-size: 11px; }
+.workspace-opener button { padding: 6px 8px; border-radius: 4px; background: #273b58; color: #d6e0ef; font-size: 11px; }
+.workspace-opener button:hover { background: #36547a; }
+.explorer-entry { display: flex; align-items: center; min-width: 0; }
+.explorer-toggle { flex: 0 0 18px; padding: 0; background: transparent; color: #75849b; font-size: 11px; }
+.explorer-entry .tree-file { min-width: 0; padding-left: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-decoration { color: #e4b35e; font-size: 10px; }
 .panel-heading, .bottom-heading, .transport-title { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 10px; font-size: 11px; letter-spacing: .08em; color: #9ba8bb; }
 .muted { color: #647187; font-size: 10px; }
 .tree-root { padding: 8px 16px; font-size: 12px; font-weight: 700; color: #cad4e4; }
@@ -37,6 +47,12 @@ button { color: inherit; border: 0; cursor: pointer; }
 .bottom-panel { min-height: 0; padding: 0 15px; background: #141922; border-top: 1px solid #29313e; overflow: auto; }
 .bottom-heading { padding-left: 0; padding-right: 0; }
 .bottom-panel pre { margin: 0; color: #8491a5; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.terminal-panel { min-height: 30px; background: #141922; border-top: 1px solid #29313e; overflow: hidden; }
+.terminal-toolbar { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; color: #9ba8bb; font-size: 11px; }
+.terminal-toolbar button { padding: 0; background: transparent; color: inherit; font-size: 11px; }
+.terminal-command { min-width: 0; overflow: hidden; color: #6f8098; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-toolbar input { width: 90px; margin-left: auto; accent-color: #5aa5ef; }
+.terminal-host { height: calc(100% - 30px); padding: 4px 10px; }
 .status-bar { display: flex; align-items: center; gap: 18px; padding: 0 12px; background: #2568a7; color: white; font-size: 11px; }
 .status-grow { flex: 1; }
 .transport { display: flex; flex-direction: column; gap: 14px; padding: 17px 16px; background: #121720; border-left: 1px solid #29313e; }

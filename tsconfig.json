@@ -20,7 +20,8 @@
       "@theaihatch/ses/browser": ["packages/ses/src/browser.ts"],
       "@theaihatch/playback": ["packages/playback/src/index.ts"],
       "@theaihatch/typing-sim": ["packages/typing-sim/src/index.ts"],
-      "@theaihatch/storage": ["packages/storage/src/index.ts"]
+      "@theaihatch/storage": ["packages/storage/src/index.ts"],
+      "@theaihatch/workspace": ["packages/workspace/src/index.ts"]
     }
   },
   "include": [
@@ -29,6 +30,7 @@
     "packages/**/*.ts",
     "packages/**/*.tsx",
     "vite.config.ts",
+    "vite.server.config.ts",
     "vitest.config.ts",
     "playwright.config.ts"
   ],
