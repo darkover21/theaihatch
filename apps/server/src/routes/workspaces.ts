@@ -60,6 +60,12 @@ export class WorkspaceRegistry {
     return record;
   }
 
+  latest(): WorkspaceRecord {
+    const record = [...this.records.values()].at(-1);
+    if (record === undefined) throw new Error("no workspace is active");
+    return record;
+  }
+
   async close(id: string): Promise<void> {
     const record = this.get(id);
     await record.watcher.stop();

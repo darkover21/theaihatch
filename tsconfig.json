@@ -5,6 +5,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "strict": true,
+    "skipLibCheck": true,
     "noImplicitAny": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
@@ -21,7 +22,14 @@
       "@theaihatch/playback": ["packages/playback/src/index.ts"],
       "@theaihatch/typing-sim": ["packages/typing-sim/src/index.ts"],
       "@theaihatch/storage": ["packages/storage/src/index.ts"],
-      "@theaihatch/workspace": ["packages/workspace/src/index.ts"]
+      "@theaihatch/workspace": ["packages/workspace/src/index.ts"],
+      "@theaihatch/providers": ["packages/providers/src/index.ts"],
+      "@theaihatch/agent": ["packages/agent/src/index.ts"],
+      "@theaihatch/mcp-client": ["packages/mcp-client/src/index.ts"],
+      "@theaihatch/mcp-server": ["packages/mcp-server/src/index.ts"],
+      "@theaihatch/safety": ["packages/safety/src/index.ts"],
+      "@theaihatch/review": ["packages/review/src/index.ts"],
+      "@theaihatch/packaging": ["packages/packaging/src/index.ts"]
     }
   },
   "include": [

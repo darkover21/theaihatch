@@ -1,0 +1,5 @@
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { userPaths } from "@theaihatch/packaging";
+export interface FirstRunState { version: 1; initialized: boolean; dataDirectory: string; keychainVerified: boolean; }
+export async function initializeFirstRun(dataDirectory = userPaths().data, verifyKeychain: () => Promise<boolean> = async () => true): Promise<FirstRunState> { await fs.mkdir(dataDirectory, { recursive: true }); const statePath = path.join(dataDirectory, "first-run.json"); try { const current = JSON.parse(await fs.readFile(statePath, "utf8")) as Partial<FirstRunState>; if (current.version === 1 && current.initialized === true) return { version: 1, initialized: true, dataDirectory, keychainVerified: current.keychainVerified === true }; } catch { /* resumable initialization */ } const keychainVerified = await verifyKeychain(); const state: FirstRunState = { version: 1, initialized: true, dataDirectory, keychainVerified }; await fs.writeFile(statePath, JSON.stringify(state, null, 2), "utf8"); return state; }

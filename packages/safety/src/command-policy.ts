@@ -1,0 +1,4 @@
+const destructivePatterns = [/\b(?:rm|del|erase|rmdir)\b/iu, /\bgit\s+(?:reset|clean|checkout|restore|rebase)\b/iu, /\b(?:format|shutdown|kill|taskkill)\b/iu, />\s*[A-Za-z]:/iu];
+export interface CommandDecision { destructive: boolean; reason: string | null; exactCommand: string; cwd: string; }
+export function classifyCommand(command: string, cwd: string): CommandDecision { const match = destructivePatterns.find((pattern) => pattern.test(command)); return { destructive: match !== undefined, reason: match === undefined ? null : "command may delete, overwrite, or terminate resources", exactCommand: command, cwd }; }
+export function requireCommandApproval(decision: CommandDecision, approved: boolean): void { if (decision.destructive && !approved) throw new Error(`approval required for exact command: ${decision.exactCommand}`); }

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="420" viewBox="0 0 920 420" role="img" aria-labelledby="title desc">
+  <title id="title">theaihatch playback surface</title>
+  <desc id="desc">An editor file tree, animated cursor, typed code, and transport controls.</desc>
+  <style>
+    .panel{fill:#151b26;stroke:#344155}.text{fill:#dce6f4;font:14px ui-monospace,monospace}.muted{fill:#7f91aa;font:12px ui-monospace,monospace}.accent{fill:#61dafb}.code{fill:#b9d4ff;font:16px ui-monospace,monospace}.cursor{fill:#61dafb;animation:blink 1s steps(2,start) infinite}.typed{animation:type 5s steps(22,end) infinite;clip-path:inset(0 100% 0 0)}@keyframes blink{50%{opacity:0}}@keyframes type{0%,20%{clip-path:inset(0 100% 0 0)}60%,100%{clip-path:inset(0 0 0 0)}}
+  </style>
+  <rect width="920" height="420" rx="18" fill="#0c111a"/>
+  <rect class="panel" x="20" y="20" width="210" height="320" rx="8"/><text class="muted" x="38" y="52">EXPLORER</text><text class="text" x="40" y="88">▾ walking-skeleton</text><text class="accent" x="56" y="122">▣ src/index.ts</text><text class="text" x="56" y="154">▣ playback.ts</text><text class="text" x="56" y="186">▣ fixture.jsonl</text>
+  <rect class="panel" x="250" y="20" width="650" height="320" rx="8"/><text class="text" x="274" y="54">index.ts</text><text class="code" x="274" y="104">export function replay(events) {</text><text class="code typed" x="274" y="138">  return events.reduce(render, initialState);</text><rect class="cursor" x="274" y="151" width="2" height="20"/><text class="code" x="274" y="190">}</text><text class="muted" x="274" y="248">human-speed playback · checkpoint seek · live head</text>
+  <rect class="panel" x="20" y="360" width="880" height="40" rx="8"/><text class="text" x="42" y="386">◀</text><text class="text" x="82" y="386">◀</text><text class="accent" x="122" y="386">▶</text><text class="text" x="164" y="386">▶</text><rect x="212" y="378" width="500" height="4" rx="2" fill="#344155"/><circle cx="430" cy="380" r="6" fill="#61dafb"/><text class="text" x="740" y="386">1×</text><text class="text" x="790" y="386">Jump to live</text>
+</svg>

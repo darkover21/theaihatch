@@ -7,9 +7,12 @@ import { PlaybackEngine, MemoryEventSource, type PlaybackSnapshot } from "@theai
 import { EditorTabs, type EditorTab } from "./features/editor/EditorTabs";
 import { Explorer, type ExplorerEntry } from "./features/explorer/Explorer";
 import { TerminalPanel, type TerminalEvent } from "./features/terminal/TerminalPanel";
+import { RunPanel } from "./features/agent/RunPanel";
+import { ProviderSettings, type ProviderSettingsValue } from "./features/providers/ProviderSettings";
 import fixtureText from "../../../fixtures/sessions/walking-skeleton/events.jsonl?raw";
 
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 8, 16, 32];
+const PROVIDER_SETTINGS: ProviderSettingsValue[] = [{ id: "openai", label: "OpenAI", models: [{ id: "gpt-4o-mini", displayName: "gpt-4o-mini" }, { id: "gpt-4o", displayName: "gpt-4o" }], selectedModel: "gpt-4o-mini", configured: false }, { id: "anthropic", label: "Anthropic", models: [{ id: "claude-sonnet-4-5", displayName: "Claude Sonnet" }], selectedModel: "claude-sonnet-4-5", configured: false }];
 
 interface WorkspaceHandle {
   id: string;
@@ -91,6 +94,10 @@ export default function App() {
   const [conflictPath, setConflictPath] = useState<string | null>(null);
   const [terminalCollapsed, setTerminalCollapsed] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(180);
+  const [agentRunning, setAgentRunning] = useState(false);
+  const [agentStatus, setAgentStatus] = useState("idle");
+  const [agentUsage, setAgentUsage] = useState({ inputTokens: 0, outputTokens: 0, costUsd: null as number | null });
+  const agentAbort = useRef<AbortController | null>(null);
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
   const decorationIds = useRef<string[]>([]);
@@ -203,6 +210,17 @@ export default function App() {
     setConflictPath(null);
   }
 
+  async function runAgent(prompt: string): Promise<void> {
+    if (workspace === null) return;
+    const controller = new AbortController(); agentAbort.current = controller; setAgentRunning(true); setAgentStatus("running");
+    try { const response = await fetch("/api/agent/run", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId: workspace.id, prompt, provider: "openai", model: "gpt-4o-mini" }), signal: controller.signal }); const payload = await responseJson(response); if (typeof payload !== "object" || payload === null || !("events" in payload) || !Array.isArray(payload.events)) throw new Error("invalid agent response"); setWorkspaceEvents(parseEvents(payload)); if ("usage" in payload && typeof payload.usage === "object" && payload.usage !== null && "inputTokens" in payload.usage && "outputTokens" in payload.usage && typeof payload.usage.inputTokens === "number" && typeof payload.usage.outputTokens === "number") setAgentUsage({ inputTokens: payload.usage.inputTokens, outputTokens: payload.usage.outputTokens, costUsd: "costUsd" in payload && typeof payload.costUsd === "number" ? payload.costUsd : null }); setAgentStatus("completed"); } catch (error) { if (controller.signal.aborted) setAgentStatus("cancelled"); else setAgentStatus(error instanceof Error ? error.message : String(error)); } finally { agentAbort.current = null; setAgentRunning(false); }
+  }
+
+  function cancelAgent(): void { agentAbort.current?.abort(); }
+
+  async function saveProviderSecret(providerId: string, secret: string): Promise<void> { await responseJson(await fetch(`/api/providers/${providerId}/secret`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ secret }) })); }
+  async function testProvider(providerId: string): Promise<string> { const model = PROVIDER_SETTINGS.find((provider) => provider.id === providerId)?.selectedModel ?? ""; const result = await responseJson(await fetch(`/api/providers/${providerId}/test`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model }) })); return typeof result === "object" && result !== null && "message" in result && typeof result.message === "string" ? result.message : "connection test complete"; }
+
   return (
     <main className="app-shell">
       <nav className="activity-bar" aria-label="Activity bar">
@@ -225,6 +243,8 @@ export default function App() {
         <div className="workspace-explorer-shell">
           <div className="workspace-opener"><strong>{workspace.rootName}</strong><button onClick={() => void runDemo()}>Run scripted demo</button><button onClick={() => setWorkspace(null)}>Close</button></div>
           <Explorer rootName={workspace.rootName} entries={workspaceEntries} activePath={workspaceActivePath} decorations={workspaceDecorations} onOpenFile={(path) => void openWorkspaceFile(workspace.id, path, true)} onExpand={async (path) => parseEntries(await responseJson(await fetch(`/api/workspaces/${workspace.id}/tree?${new URLSearchParams({ path }).toString()}`)))} />
+          <ProviderSettings providers={PROVIDER_SETTINGS} onSelect={() => undefined} onSaveSecret={saveProviderSecret} onTest={testProvider} />
+          <RunPanel running={agentRunning} status={agentStatus} usage={agentUsage} onRun={(prompt) => void runAgent(prompt)} onCancel={cancelAgent} />
           {workspaceError !== null && <div className="error-box" role="alert">{workspaceError}</div>}
         </div>
       )}

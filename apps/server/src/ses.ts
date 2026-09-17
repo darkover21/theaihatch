@@ -1,1 +1,1 @@
-export * from "../../../packages/ses/src/index.ts";
+export * from "../../../packages/ses/src/index.js";

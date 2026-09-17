@@ -1,0 +1,3 @@
+import os from "node:os";
+import path from "node:path";
+export function userPaths(platform = process.platform, home = os.homedir()): { config: string; data: string } { if (platform === "win32") return { config: path.join(home, "AppData", "Roaming", "theaihatch"), data: path.join(home, "AppData", "Local", "theaihatch") }; if (platform === "darwin") return { config: path.join(home, "Library", "Application Support", "theaihatch"), data: path.join(home, "Library", "Application Support", "theaihatch", "data") }; return { config: path.join(home, ".config", "theaihatch"), data: path.join(home, ".local", "share", "theaihatch") }; }

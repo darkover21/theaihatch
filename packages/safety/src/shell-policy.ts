@@ -1,0 +1,2 @@
+import { createPathPolicy, type PathPolicy } from "./path-policy.js";
+export async function createShellPolicy(root: string): Promise<{ workspaceRoot: string; pathPolicy: PathPolicy; workingDirectory(candidate?: string): Promise<string> }> { const pathPolicy = await createPathPolicy(root); return { workspaceRoot: pathPolicy.root, pathPolicy, workingDirectory: async (candidate = pathPolicy.root) => pathPolicy.resolve(candidate) }; }

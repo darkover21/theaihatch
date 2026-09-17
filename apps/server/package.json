@@ -4,9 +4,16 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@theaihatch/agent": "0.1.0",
+    "@theaihatch/mcp-server": "0.1.0",
+    "@theaihatch/packaging": "0.1.0",
+    "@theaihatch/providers": "0.1.0",
+    "@theaihatch/safety": "0.1.0",
     "@theaihatch/ses": "0.1.0",
+    "@theaihatch/storage": "0.1.0",
     "@theaihatch/workspace": "0.1.0",
     "fastify": "^5.5.0",
+    "keytar": "^7.9.0",
     "zod": "^3.25.76"
   },
   "scripts": {

@@ -1,0 +1,8 @@
+{
+  "name": "@theaihatch/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@theaihatch/providers": "0.1.0", "@theaihatch/ses": "0.1.0" }
+}

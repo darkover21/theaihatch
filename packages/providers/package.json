@@ -1,0 +1,8 @@
+{
+  "name": "@theaihatch/providers",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@anthropic-ai/sdk": "^0.62.0", "openai": "^5.20.0" }
+}

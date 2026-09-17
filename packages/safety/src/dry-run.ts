@@ -1,0 +1,2 @@
+export interface ProposedAction { kind: "file" | "command"; description: string; path?: string; command?: string; }
+export class DryRunRecorder { readonly actions: ProposedAction[] = []; constructor(readonly enabled = true) {} file(path: string, description: string): void { if (this.enabled) this.actions.push({ kind: "file", path, description }); } command(command: string, description = "command proposed"): void { if (this.enabled) this.actions.push({ kind: "command", command, description }); } }
