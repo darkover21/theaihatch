@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { AnthropicAdapter, OpenAIAdapter, OpenAICompatibleAdapter, toMessages } from "../src/index.js";
+import { AnthropicAdapter, GeminiAdapter, OpenAIAdapter, OpenAICompatibleAdapter, completionReason, toGeminiContents, toMessages } from "../src/index.js";
 import type { ProviderAdapter } from "../src/types.js";
 
-const adapters = (): ProviderAdapter[] => [new OpenAIAdapter({}, "gpt-test"), new AnthropicAdapter({}, "claude-test"), new OpenAICompatibleAdapter({ baseURL: "http://127.0.0.1:1234/v1" }, "local-test")];
+const adapters = (): ProviderAdapter[] => [new OpenAIAdapter({}, "gpt-test"), new AnthropicAdapter({}, "claude-test"), new GeminiAdapter({}, "gemini-test"), new OpenAICompatibleAdapter({ baseURL: "http://127.0.0.1:1234/v1" }, "local-test")];
 describe("provider contract", () => {
   it("REQ-PRV-001 and REQ-PRV-005: all selected adapters expose the normalized surface", () => { for (const adapter of adapters()) { expect(adapter.id).toBeTypeOf("string"); expect(adapter.listModels).toBeTypeOf("function"); expect(adapter.testConnection).toBeTypeOf("function"); expect(adapter.stream).toBeTypeOf("function"); } });
   it("REQ-PRV-002: maps system, assistant tool use, and tool results for Anthropic", () => { const mapped = toMessages([{ role: "system", content: "rules" }, { role: "user", content: "change file" }, { role: "assistant", content: "", toolCalls: [{ id: "call-1", name: "edit_file", arguments: { path: "a" } }] }, { role: "tool", content: "ok", toolCallId: "call-1" }]); expect(mapped.system).toBe("rules"); expect(mapped.messages[1]?.role).toBe("assistant"); expect(mapped.messages[2]?.role).toBe("user"); });
+  it("REQ-PRV-004: maps Gemini function calls, function responses, and safety stops", () => { const mapped = toGeminiContents([{ role: "system", content: "rules" }, { role: "user", content: "change file" }, { role: "assistant", content: "", toolCalls: [{ id: "call-1", name: "edit_file", arguments: { path: "a" } }] }, { role: "tool", content: '{"ok":true}', toolCallId: "call-1" }]); expect(mapped.systemInstruction).toMatchObject({ parts: [{ text: "rules" }] }); expect(mapped.contents[1]).toMatchObject({ role: "model", parts: [{ functionCall: { id: "call-1", name: "edit_file", args: { path: "a" } } }] }); expect(mapped.contents[2]).toMatchObject({ role: "user", parts: [{ functionResponse: { id: "call-1", name: "edit_file", response: { output: { ok: true } } } }] }); expect(completionReason("SAFETY", false)).toBe("blocked"); });
 });

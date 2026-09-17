@@ -27,7 +27,7 @@ npm run test
 npm run build
 ```
 
-The supported provider path is OpenAI followed by Anthropic; Gemini is intentionally not included in this build. OpenAI-compatible endpoints can be configured with a base URL and manual model name.
+Supported providers are OpenAI, Anthropic, Google Gemini, and OpenAI-compatible endpoints. Gemini uses the official `@google/genai` SDK; its API key is stored in the operating-system keychain like the other provider credentials. OpenAI-compatible endpoints can be configured with a base URL and manual model name.
 
 ## License
 

@@ -1,4 +1,4 @@
-export type ProviderId = "openai" | "anthropic" | "openai-compatible";
+export type ProviderId = "openai" | "anthropic" | "gemini" | "openai-compatible";
 
 export interface ProviderModel {
   id: string;
