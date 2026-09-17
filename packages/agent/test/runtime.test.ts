@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderAdapter, ProviderModel, ProviderRequest, ProviderStreamEvent } from "@theaihatch/providers";
 import { AgentRuntime } from "../src/runtime.js";
+import { ReviewGate } from "../src/review-gate.js";
 import { composeSystemPrompt } from "../src/system-prompt.js";
 
 class FakeProvider implements ProviderAdapter {
@@ -42,5 +43,40 @@ describe("agent runtime", () => {
     const result = await new AgentRuntime(provider, { model: "fake", systemPrompt: "safe", tools: [] }).run({ prompt: "stop", signal: controller.signal, executeTool: async () => ({ ok: true, content: null }) });
     expect(result.status).toBe("cancelled");
     expect(provider.calls).toBe(0);
+  });
+
+  it("delivers resolved review feedback to exactly one subsequent provider message", async () => {
+    const gate = new ReviewGate();
+    gate.require([{ path: "a.ts", hunkId: "hunk-1", decision: "rejected", feedback: "Please revise" }]);
+    gate.resolve([{ path: "a.ts", hunkId: "hunk-1", decision: "rejected", feedback: "Please revise" }]);
+    const requests: ProviderRequest[] = [];
+    const provider: ProviderAdapter = {
+      id: "openai",
+      async listModels() { return [{ id: "fake", displayName: "fake" }]; },
+      async testConnection() { return { reachable: true, authenticated: true, modelAvailable: true, message: "ok" }; },
+      async *stream(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          yield { type: "tool_call", call: { id: "call-1", name: "read", arguments: {} } };
+          yield { type: "completed", reason: "tool_calls" };
+        } else {
+          yield { type: "completed", reason: "stop" };
+        }
+      }
+    };
+    await new AgentRuntime(provider, { model: "fake", systemPrompt: "safe", tools: [{ name: "read", inputSchema: { type: "object" } }], reviewGate: gate }).run({ prompt: "go", executeTool: async () => ({ ok: true, content: "contents" }) });
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.messages.filter((message) => message.role === "user")).toHaveLength(2);
+    expect(requests[1]?.messages.find((message) => message.role === "user" && message.content !== "go")?.content).toContain("Please revise");
+    expect(gate.consumeFeedback()).toEqual([]);
+  });
+
+  it("makes a blocked review wait abort-aware", async () => {
+    const gate = new ReviewGate();
+    gate.require([{ path: "a.ts", decision: "rejected" }]);
+    const controller = new AbortController();
+    const wait = gate.wait(controller.signal);
+    controller.abort();
+    await expect(wait).rejects.toThrow("run cancelled");
   });
 });

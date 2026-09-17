@@ -106,7 +106,7 @@ export class AgentRuntime {
           await input.appendSes?.({ type: "agent_tool_result", payload: { callId: call.id, ok: result.ok, content: result.content, ...(result.errorCode === undefined ? {} : { errorCode: result.errorCode }) } });
           messages.push({ role: "tool", content: stringifyToolContent(result.content), toolCallId: call.id });
         }
-        if (this.config.reviewGate?.isBlocked() === true) { await this.config.reviewGate.wait(); const feedback = this.config.reviewGate.consumeFeedback(); if (feedback.length > 0) messages.push({ role: "user", content: JSON.stringify({ review: feedback }) }); }
+        if (this.config.reviewGate !== undefined) { if (this.config.reviewGate.isBlocked()) await this.config.reviewGate.wait(input.signal); const feedback = this.config.reviewGate.consumeFeedback(); if (feedback.length > 0) messages.push({ role: "user", content: JSON.stringify({ review: feedback }) }); }
       }
       if (turns >= maxTurns && status === "completed") { status = "limit_reached"; await input.appendSes?.({ type: "error", payload: { code: "limit_reached", message: "turn limit reached", recoverable: false, source: "agent" } }); }
     } catch (caught) {
