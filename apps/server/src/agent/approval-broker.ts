@@ -30,6 +30,9 @@ export class ApprovalBroker {
   resolveReview(operationId: string, decisions: readonly StoredReviewDecisionInput[]): void {
     const request = this.requests.get(operationId);
     if (request === undefined || request.approval.kind !== "review") throw new Error(`review approval not pending: ${operationId}`);
+    const expectedHunkIds = new Set(request.approval.hunks.map((hunk) => hunk.id));
+    const decisionHunkIds = new Set(decisions.map((decision) => decision.hunkId));
+    if (decisions.length !== request.approval.hunks.length || decisionHunkIds.size !== decisions.length || [...decisionHunkIds].some((hunkId) => !expectedHunkIds.has(hunkId))) throw new Error(`review must include exactly one decision per hunk: ${operationId}`);
     this.requests.delete(operationId);
     request.resolve([...decisions]);
   }
