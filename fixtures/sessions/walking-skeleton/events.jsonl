@@ -1,0 +1,18 @@
+{"seq":0,"t":0,"type":"workspace_open","payload":{"rootName":"walking-skeleton","canonicalRoot":"."}}
+{"seq":1,"t":10,"type":"step_begin","payload":{"stepId":"step-create-app","label":"Create app.ts","primaryPath":"src/app.ts"}}
+{"seq":2,"t":20,"type":"file_create","payload":{"path":"src/app.ts"}}
+{"seq":3,"t":30,"type":"file_open","payload":{"path":"src/app.ts","preview":false}}
+{"seq":4,"t":40,"type":"edit_insert","payload":{"path":"src/app.ts","position":{"line":0,"column":0},"text":"export function greet(name: string): string {\n"}}
+{"seq":5,"t":50,"type":"edit_insert","payload":{"path":"src/app.ts","position":{"line":1,"column":0},"text":"    return `Hello, ${name}!`;\n"}}
+{"seq":6,"t":60,"type":"edit_insert","payload":{"path":"src/app.ts","position":{"line":2,"column":0},"text":"}\n"}}
+{"seq":7,"t":75,"type":"cursor_move","payload":{"path":"src/app.ts","position":{"line":2,"column":1}}}
+{"seq":8,"t":90,"type":"file_save","payload":{"path":"src/app.ts","contentHash":"fixture-app"}}
+{"seq":9,"t":100,"type":"step_end","payload":{"stepId":"step-create-app","outcome":"succeeded","summary":"Created the greeting function"}}
+{"seq":10,"t":110,"type":"checkpoint","payload":{"reason":"final","files":[{"path":"src/app.ts","content":"export function greet(name: string): string {\n    return `Hello, ${name}!`;\n}\n","contentHash":"fixture-app"}]}}
+{"seq":11,"t":120,"type":"step_begin","payload":{"stepId":"step-create-readme","label":"Document the greeting","primaryPath":"README.md"}}
+{"seq":12,"t":130,"type":"file_create","payload":{"path":"README.md"}}
+{"seq":13,"t":140,"type":"file_open","payload":{"path":"README.md","preview":false}}
+{"seq":14,"t":150,"type":"edit_insert","payload":{"path":"README.md","position":{"line":0,"column":0},"text":"# Walking skeleton\n\nThis file was typed by the playback engine.\n"}}
+{"seq":15,"t":170,"type":"file_save","payload":{"path":"README.md","contentHash":"fixture-readme"}}
+{"seq":16,"t":180,"type":"step_end","payload":{"stepId":"step-create-readme","outcome":"succeeded","summary":"Documented the fixture"}}
+{"seq":17,"t":190,"type":"checkpoint","payload":{"reason":"final","files":[{"path":"README.md","content":"# Walking skeleton\n\nThis file was typed by the playback engine.\n","contentHash":"fixture-readme"},{"path":"src/app.ts","content":"export function greet(name: string): string {\n    return `Hello, ${name}!`;\n}\n","contentHash":"fixture-app"}]}}

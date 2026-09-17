@@ -1,0 +1,8 @@
+{
+  "name": "@theaihatch/ses",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts", "./browser": "./src/browser.ts" },
+  "dependencies": { "zod": "^3.25.76" }
+}

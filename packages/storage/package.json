@@ -1,0 +1,8 @@
+{
+  "name": "@theaihatch/storage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@theaihatch/ses": "0.1.0", "better-sqlite3": "^12.2.0" }
+}
