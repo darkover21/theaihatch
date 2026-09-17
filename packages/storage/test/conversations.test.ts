@@ -2,7 +2,9 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { diffFile } from "@theaihatch/review";
 import { ConversationRepository } from "../src/conversations.js";
+import { ReviewRepository } from "../src/reviews.js";
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => { await Promise.all(temporaryDirectories.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true }))); });
@@ -24,5 +26,9 @@ describe("conversation persistence", () => {
     expect(reloaded.getRun("run-1").status).toBe("cancelled");
     expect(reloaded.getUsage("run-1").inputTokens).toBe(10);
     reloaded.close();
+    const reviews = new ReviewRepository(directory);
+    const snapshot = reviews.createSnapshot({ runId: "run-1", checkpointId: "cp-1", files: [diffFile("README.md", "before", "after")] });
+    expect(reviews.listSnapshots("run-1")[0]?.id).toBe(snapshot.id);
+    reviews.close();
   });
 });
