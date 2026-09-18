@@ -7,7 +7,8 @@ import { PlaybackEngine, MemoryEventSource, type PlaybackSnapshot } from "@theai
 import { EditorTabs, type EditorTab } from "./features/editor/EditorTabs";
 import { Explorer, type ExplorerEntry } from "./features/explorer/Explorer";
 import { TerminalPanel, type TerminalEvent } from "./features/terminal/TerminalPanel";
-import { RunPanel } from "./features/agent/RunPanel";
+import { RunPanel, type AgentRunOptions } from "./features/agent/RunPanel";
+import { ReviewPanel, type ReviewHunkView } from "./features/review/ReviewPanel";
 import { ProviderSettings, type ProviderSettingsValue } from "./features/providers/ProviderSettings";
 import fixtureText from "../../../fixtures/sessions/walking-skeleton/events.jsonl?raw";
 
@@ -25,6 +26,28 @@ interface WorkspaceChange {
   path: string;
   previousPath?: string;
 }
+
+type AgentRunStatus = "running" | "waiting_for_review" | "waiting_for_command" | "completed" | "cancelled" | "failed" | "limit_reached";
+
+interface AgentReviewHunk {
+  id: string;
+  path: string;
+  startLine: number;
+  beforeLines: string[];
+  afterLines: string[];
+  fingerprint: string;
+  eventSeq?: number;
+}
+
+interface AgentPendingReview { kind: "review"; operationId: string; snapshotId: string; hunks: AgentReviewHunk[]; }
+interface AgentPendingCommand { kind: "command"; operationId: string; decision: { destructive: boolean; reason: string | null; exactCommand: string; cwd: string }; }
+type AgentPendingApproval = AgentPendingReview | AgentPendingCommand;
+
+interface AgentProposal { kind: "file" | "command"; description: string; path?: string; command?: string; }
+interface AgentRunView { runId: string; checkpointId: string; status: AgentRunStatus; events: AnySesEvent[]; pending: AgentPendingApproval | null; proposals: AgentProposal[]; usage: { inputTokens: number; outputTokens: number; cachedTokens: number; reasoningTokens: number }; error: string | null; }
+interface AgentReviewDecision { hunkId: string; decision: "accepted" | "rejected"; actor: string; feedback?: string; }
+
+const terminalAgentStatuses = new Set<AgentRunStatus>(["completed", "cancelled", "failed", "limit_reached"]);
 
 function readFixture(): AnySesEvent[] {
   return fixtureText.trim().split("\n").map((line) => validateSesEvent(JSON.parse(line) as unknown));
@@ -75,6 +98,51 @@ function parseEvents(payload: unknown): AnySesEvent[] {
   return payload.events.map((event) => validateSesEvent(event));
 }
 
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
+}
+
+function parseAgentStart(payload: unknown): { runId: string; checkpointId: string } {
+  const value = recordValue(payload);
+  if (value === null || typeof value.runId !== "string" || typeof value.checkpointId !== "string") throw new Error("invalid agent start response");
+  return { runId: value.runId, checkpointId: value.checkpointId };
+}
+
+function parseAgentPending(value: unknown): AgentPendingApproval | null {
+  if (value === null || value === undefined) return null;
+  const pending = recordValue(value);
+  if (pending === null || typeof pending.kind !== "string" || typeof pending.operationId !== "string") throw new Error("invalid agent pending approval");
+  if (pending.kind === "review") {
+    const hunks = Array.isArray(pending.hunks) ? pending.hunks.flatMap((candidate): AgentReviewHunk[] => {
+      const hunk = recordValue(candidate);
+      if (hunk === null || typeof hunk.id !== "string" || typeof hunk.path !== "string" || typeof hunk.startLine !== "number" || !Array.isArray(hunk.beforeLines) || !Array.isArray(hunk.afterLines) || typeof hunk.fingerprint !== "string") return [];
+      if (!hunk.beforeLines.every((line) => typeof line === "string") || !hunk.afterLines.every((line) => typeof line === "string")) return [];
+      return [{ id: hunk.id, path: hunk.path, startLine: hunk.startLine, beforeLines: hunk.beforeLines, afterLines: hunk.afterLines, fingerprint: hunk.fingerprint, ...(typeof hunk.eventSeq === "number" ? { eventSeq: hunk.eventSeq } : {}) }];
+    }) : [];
+    if (typeof pending.snapshotId !== "string" || hunks.length === 0) throw new Error("invalid agent review approval");
+    return { kind: "review", operationId: pending.operationId, snapshotId: pending.snapshotId, hunks };
+  }
+  if (pending.kind === "command") {
+    const decision = recordValue(pending.decision);
+    if (decision === null || typeof decision.destructive !== "boolean" || (typeof decision.reason !== "string" && decision.reason !== null) || typeof decision.exactCommand !== "string" || typeof decision.cwd !== "string") throw new Error("invalid agent command approval");
+    return { kind: "command", operationId: pending.operationId, decision: { destructive: decision.destructive, reason: decision.reason, exactCommand: decision.exactCommand, cwd: decision.cwd } };
+  }
+  throw new Error("invalid agent pending approval kind");
+}
+
+function parseAgentRunView(payload: unknown): AgentRunView {
+  const value = recordValue(payload);
+  const statuses: AgentRunStatus[] = ["running", "waiting_for_review", "waiting_for_command", "completed", "cancelled", "failed", "limit_reached"];
+  const usage = value === null ? null : recordValue(value.usage);
+  if (value === null || typeof value.runId !== "string" || typeof value.checkpointId !== "string" || typeof value.status !== "string" || !statuses.includes(value.status as AgentRunStatus) || usage === null || typeof usage.inputTokens !== "number" || typeof usage.outputTokens !== "number" || typeof usage.cachedTokens !== "number" || typeof usage.reasoningTokens !== "number") throw new Error("invalid agent status response");
+  const proposals = Array.isArray(value.proposals) ? value.proposals.flatMap((candidate): AgentProposal[] => {
+    const proposal = recordValue(candidate);
+    if (proposal === null || (proposal.kind !== "file" && proposal.kind !== "command") || typeof proposal.description !== "string") return [];
+    return [{ kind: proposal.kind, description: proposal.description, ...(typeof proposal.path === "string" ? { path: proposal.path } : {}), ...(typeof proposal.command === "string" ? { command: proposal.command } : {}) }];
+  }) : [];
+  return { runId: value.runId, checkpointId: value.checkpointId, status: value.status as AgentRunStatus, events: parseEvents(payload), pending: parseAgentPending(value.pending), proposals, usage: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cachedTokens: usage.cachedTokens, reasoningTokens: usage.reasoningTokens }, error: typeof value.error === "string" ? value.error : null };
+}
+
 function terminalEvents(events: readonly AnySesEvent[]): TerminalEvent[] {
   return events.flatMap((event) => event.type === "terminal_output" ? [{ stream: event.payload.stream, chunk: event.payload.chunk, eof: event.payload.eof, ...(event.payload.exitCode === undefined ? {} : { exitCode: event.payload.exitCode }), ...(event.payload.signal === undefined ? {} : { signal: event.payload.signal }) }] : []);
 }
@@ -97,9 +165,12 @@ export default function App() {
   const [agentRunning, setAgentRunning] = useState(false);
   const [agentStatus, setAgentStatus] = useState("idle");
   const [agentUsage, setAgentUsage] = useState({ inputTokens: 0, outputTokens: 0, costUsd: null as number | null });
+  const [agentRun, setAgentRun] = useState<AgentRunView | null>(null);
+  const [reviewDecisions, setReviewDecisions] = useState<Record<string, AgentReviewDecision>>({});
   const [providerSettings, setProviderSettings] = useState<ProviderSettingsValue[]>(PROVIDER_SETTINGS);
   const [selectedProviderId, setSelectedProviderId] = useState("openai");
   const agentAbort = useRef<AbortController | null>(null);
+  const agentRunId = useRef<string | null>(null);
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
   const decorationIds = useRef<string[]>([]);
@@ -112,6 +183,8 @@ export default function App() {
     void engine.load();
     return unsubscribe;
   }, [engine]);
+
+  useEffect(() => () => { agentAbort.current?.abort(); }, []);
 
   useEffect(() => {
     window.localStorage.setItem("theme", theme);
@@ -212,15 +285,103 @@ export default function App() {
     setConflictPath(null);
   }
 
-  async function runAgent(prompt: string): Promise<void> {
-    if (workspace === null) return;
-    const selectedProvider = providerSettings.find((provider) => provider.id === selectedProviderId) ?? providerSettings[0];
-    if (selectedProvider === undefined) return;
-    const controller = new AbortController(); agentAbort.current = controller; setAgentRunning(true); setAgentStatus("running");
-    try { const response = await fetch("/api/agent/run", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId: workspace.id, prompt, provider: selectedProvider.id, model: selectedProvider.selectedModel }), signal: controller.signal }); const payload = await responseJson(response); if (typeof payload !== "object" || payload === null || !("events" in payload) || !Array.isArray(payload.events)) throw new Error("invalid agent response"); setWorkspaceEvents(parseEvents(payload)); if ("usage" in payload && typeof payload.usage === "object" && payload.usage !== null && "inputTokens" in payload.usage && "outputTokens" in payload.usage && typeof payload.usage.inputTokens === "number" && typeof payload.usage.outputTokens === "number") setAgentUsage({ inputTokens: payload.usage.inputTokens, outputTokens: payload.usage.outputTokens, costUsd: "costUsd" in payload && typeof payload.costUsd === "number" ? payload.costUsd : null }); setAgentStatus("completed"); } catch (error) { if (controller.signal.aborted) setAgentStatus("cancelled"); else setAgentStatus(error instanceof Error ? error.message : String(error)); } finally { agentAbort.current = null; setAgentRunning(false); }
+  function applyAgentView(view: AgentRunView): void {
+    setAgentRun(view);
+    setWorkspaceEvents(view.events);
+    setAgentUsage({ inputTokens: view.usage.inputTokens, outputTokens: view.usage.outputTokens, costUsd: null });
+    setAgentStatus(view.status);
   }
 
-  function cancelAgent(): void { agentAbort.current?.abort(); }
+  async function pollAgentRun(runId: string, signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      const view = parseAgentRunView(await responseJson(await fetch(`/api/agent/runs/${runId}`, { signal })));
+      applyAgentView(view);
+      if (terminalAgentStatuses.has(view.status)) return;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
+    }
+  }
+
+  async function runAgent(options: AgentRunOptions): Promise<void> {
+    if (workspace === null || agentAbort.current !== null) return;
+    const selectedProvider = providerSettings.find((provider) => provider.id === selectedProviderId) ?? providerSettings[0];
+    if (selectedProvider === undefined) return;
+    const controller = new AbortController();
+    agentAbort.current = controller;
+    agentRunId.current = null;
+    setAgentRun(null);
+    setReviewDecisions({});
+    setWorkspaceEvents([]);
+    setAgentRunning(true);
+    setAgentStatus("starting");
+    try {
+      const started = parseAgentStart(await responseJson(await fetch("/api/agent/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId: workspace.id, prompt: options.prompt, provider: selectedProvider.id, model: selectedProvider.selectedModel, reviewMode: options.reviewMode, dryRun: options.dryRun }), signal: controller.signal })));
+      agentRunId.current = started.runId;
+      await pollAgentRun(started.runId, controller.signal);
+    } catch (error) {
+      if (controller.signal.aborted) setAgentStatus("cancelled");
+      else setAgentStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (agentAbort.current === controller) agentAbort.current = null;
+      setAgentRunning(false);
+    }
+  }
+
+  function cancelAgent(): void {
+    const runId = agentRunId.current;
+    if (runId === null) {
+      agentAbort.current?.abort();
+      return;
+    }
+    setAgentStatus("cancelling");
+    void fetch(`/api/agent/runs/${runId}/cancel`, { method: "POST" }).then(responseJson).then((payload) => applyAgentView(parseAgentRunView(payload))).catch((error: unknown) => setAgentStatus(error instanceof Error ? error.message : String(error)));
+  }
+
+  async function submitReviewDecisions(decisions: readonly AgentReviewDecision[]): Promise<void> {
+    const runId = agentRunId.current;
+    if (runId === null) return;
+    try {
+      const payload = await responseJson(await fetch(`/api/agent/runs/${runId}/review`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ decisions }) }));
+      setReviewDecisions({});
+      applyAgentView(parseAgentRunView(payload));
+    } catch (error) {
+      setAgentStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function chooseReviewDecision(hunk: ReviewHunkView, decision: "accepted" | "rejected", feedback?: string): void {
+    const next: Record<string, AgentReviewDecision> = { ...reviewDecisions, [hunk.id]: { hunkId: hunk.id, decision, actor: "user", ...(feedback === undefined || feedback.trim() === "" ? {} : { feedback: feedback.trim() }) } };
+    setReviewDecisions(next);
+    const pending = agentRun?.pending;
+    if (pending?.kind === "review" && pending.hunks.every((candidate) => next[candidate.id] !== undefined)) void submitReviewDecisions(Object.values(next));
+  }
+
+  function acceptAllReview(): void {
+    const pending = agentRun?.pending;
+    if (pending?.kind !== "review") return;
+    const decisions = pending.hunks.map((hunk): AgentReviewDecision => ({ hunkId: hunk.id, decision: "accepted", actor: "user" }));
+    setReviewDecisions(Object.fromEntries(decisions.map((decision) => [decision.hunkId, decision])));
+    void submitReviewDecisions(decisions);
+  }
+
+  function seekAgentEvent(seq: number): void {
+    setAgentStatus(`review event ${seq}`);
+  }
+
+  function agentReviewHunks(): ReviewHunkView[] {
+    const pending = agentRun?.pending;
+    if (pending?.kind !== "review") return [];
+    return pending.hunks.map((hunk) => {
+      const selected = reviewDecisions[hunk.id];
+      return { id: hunk.id, path: hunk.path, before: hunk.beforeLines.join("\n"), after: hunk.afterLines.join("\n"), ...(hunk.eventSeq === undefined ? {} : { eventSeq: hunk.eventSeq }), ...(selected === undefined ? {} : { decision: selected.decision, ...(selected.feedback === undefined ? {} : { feedback: selected.feedback }) }) };
+    });
+  }
+
+  function approveAgentCommand(approved: boolean): void {
+    const runId = agentRunId.current;
+    const pending = agentRun?.pending;
+    if (runId === null || pending?.kind !== "command") return;
+    void fetch(`/api/agent/runs/${runId}/command-approval`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approved, command: pending.decision.exactCommand, cwd: pending.decision.cwd }) }).then(responseJson).then((payload) => applyAgentView(parseAgentRunView(payload))).catch((error: unknown) => setAgentStatus(error instanceof Error ? error.message : String(error)));
+  }
 
   async function saveProviderSecret(providerId: string, secret: string): Promise<void> { await responseJson(await fetch(`/api/providers/${providerId}/secret`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ secret }) })); setProviderSettings((providers) => providers.map((provider) => provider.id === providerId ? { ...provider, configured: true } : provider)); }
   async function testProvider(providerId: string): Promise<string> { const model = providerSettings.find((provider) => provider.id === providerId)?.selectedModel ?? ""; const result = await responseJson(await fetch(`/api/providers/${providerId}/test`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model }) })); return typeof result === "object" && result !== null && "message" in result && typeof result.message === "string" ? result.message : "connection test complete"; }
@@ -248,7 +409,11 @@ export default function App() {
           <div className="workspace-opener"><strong>{workspace.rootName}</strong><button onClick={() => void runDemo()}>Run scripted demo</button><button onClick={() => setWorkspace(null)}>Close</button></div>
           <Explorer rootName={workspace.rootName} entries={workspaceEntries} activePath={workspaceActivePath} decorations={workspaceDecorations} onOpenFile={(path) => void openWorkspaceFile(workspace.id, path, true)} onExpand={async (path) => parseEntries(await responseJson(await fetch(`/api/workspaces/${workspace.id}/tree?${new URLSearchParams({ path }).toString()}`)))} />
           <ProviderSettings providers={providerSettings} onSelect={(providerId, modelId) => { setSelectedProviderId(providerId); setProviderSettings((providers) => providers.map((provider) => provider.id === providerId ? { ...provider, selectedModel: modelId } : provider)); }} onSaveSecret={saveProviderSecret} onTest={testProvider} />
-          <RunPanel running={agentRunning} status={agentStatus} usage={agentUsage} onRun={(prompt) => void runAgent(prompt)} onCancel={cancelAgent} />
+          <RunPanel running={agentRunning} status={agentStatus} usage={agentUsage} onRun={(options) => void runAgent(options)} onCancel={cancelAgent} />
+          {agentRun !== null && <div className="checkpoint-readout">checkpoint: {agentRun.checkpointId}</div>}
+          {agentRun !== null && agentRun.proposals.length > 0 && <section aria-label="Dry-run proposals" className="settings-panel proposal-panel"><h2>Dry-run proposals</h2>{agentRun.proposals.map((proposal, index) => <article key={`${proposal.kind}-${index}`}><strong>{proposal.kind === "file" ? proposal.path ?? "file change" : proposal.command ?? "command"}</strong><small>{proposal.description}</small></article>)}</section>}
+          {agentRun?.pending?.kind === "review" && <ReviewPanel hunks={agentReviewHunks()} onDecision={chooseReviewDecision} onAcceptAll={acceptAllReview} onSeek={seekAgentEvent} />}
+          {agentRun?.pending?.kind === "command" && <section aria-label="Command approval" className="settings-panel command-approval"><h2>Approve command</h2><pre>{agentRun.pending.decision.exactCommand}</pre><small>cwd: {agentRun.pending.decision.cwd}</small>{agentRun.pending.decision.reason !== null && <p>{agentRun.pending.decision.reason}</p>}<div className="review-actions"><button onClick={() => approveAgentCommand(true)}>Approve</button><button onClick={() => approveAgentCommand(false)}>Deny</button></div></section>}
           {workspaceError !== null && <div className="error-box" role="alert">{workspaceError}</div>}
         </div>
       )}
