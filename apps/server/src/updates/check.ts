@@ -109,15 +109,27 @@ export function verifyReleaseMetadata(metadata: ReleaseMetadata, publicKey: stri
 
 export class UpdateChecker {
   private lastCheck: number | null = null;
+  private inFlight = false;
 
   constructor(private readonly minimumIntervalMs = 86_400_000) {}
 
   shouldCheck(now = Date.now()): boolean {
-    return this.lastCheck === null || now - this.lastCheck >= this.minimumIntervalMs;
+    return !this.inFlight && (this.lastCheck === null || now - this.lastCheck >= this.minimumIntervalMs);
   }
 
   markChecked(now = Date.now()): void {
     this.lastCheck = now;
+  }
+
+  claim(now = Date.now()): boolean {
+    if (!this.shouldCheck(now)) return false;
+    this.inFlight = true;
+    this.markChecked(now);
+    return true;
+  }
+
+  release(): void {
+    this.inFlight = false;
   }
 }
 
@@ -128,9 +140,10 @@ export async function checkSignedRelease(
   options: CheckSignedReleaseOptions = {},
 ): Promise<ReleaseMetadata | null> {
   const now = options.now ?? Date.now;
-  if (!checker.shouldCheck(now())) return null;
+  if (!checker.claim(now())) return null;
 
   try {
+    if (options.currentVersion === undefined) return null;
     if (!isHttpsUrl(url)) return null;
 
     const controller = new AbortController();
@@ -142,7 +155,7 @@ export async function checkSignedRelease(
       const parsed = releaseMetadata.safeParse(await response.json());
       if (!parsed.success) return null;
       if (!verifyReleaseMetadata(parsed.data, publicKey)) return null;
-      if (!isNewerVersion(options.currentVersion ?? "0.1.0", parsed.data.version)) return null;
+      if (!isNewerVersion(options.currentVersion, parsed.data.version)) return null;
       return parsed.data;
     } finally {
       clearTimeout(timeout);
@@ -150,6 +163,6 @@ export async function checkSignedRelease(
   } catch {
     return null;
   } finally {
-    checker.markChecked(now());
+    checker.release();
   }
 }

@@ -101,6 +101,7 @@ describe("signed release metadata", () => {
   it("rejects non-HTTPS release URLs before fetching", async () => {
     let calls = 0;
     const result = await checkSignedRelease("http://updates.test/release.json", publicKey, new UpdateChecker(), {
+      currentVersion: "0.1.0",
       fetcher: async () => {
         calls += 1;
         return new Response();
@@ -113,6 +114,7 @@ describe("signed release metadata", () => {
 
   it("returns no release when offline", async () => {
     const result = await checkSignedRelease("https://updates.test/release.json", publicKey, new UpdateChecker(), {
+      currentVersion: "0.1.0",
       fetcher: async () => { throw new Error("offline"); },
     });
 
@@ -129,6 +131,7 @@ describe("signed release metadata", () => {
     });
 
     const result = await checkSignedRelease("https://updates.test/release.json", publicKey, new UpdateChecker(), {
+      currentVersion: "0.1.0",
       fetcher,
       timeoutMs: 5,
     });
@@ -147,6 +150,42 @@ describe("signed release metadata", () => {
     expect(result).toBeNull();
   });
 
+  it("requires the caller to provide the running version", async () => {
+    let calls = 0;
+    const result = await checkSignedRelease("https://updates.test/release.json", publicKey, new UpdateChecker(), {
+      fetcher: async () => {
+        calls += 1;
+        return new Response(JSON.stringify(signRelease()));
+      },
+    });
+
+    expect(result).toBeNull();
+    expect(calls).toBe(0);
+  });
+
+  it("allows only one concurrent release check to begin fetching", async () => {
+    const signed = signRelease();
+    let calls = 0;
+    let resolveResponse: ((response: Response) => void) | undefined;
+    const response = new Promise<Response>((resolve) => {
+      resolveResponse = resolve;
+    });
+    const fetcher: typeof fetch = async () => {
+      calls += 1;
+      return response;
+    };
+    const checker = new UpdateChecker(100);
+    const options = { currentVersion: "0.1.0", fetcher };
+
+    const first = checkSignedRelease("https://updates.test/release.json", publicKey, checker, options);
+    const second = checkSignedRelease("https://updates.test/release.json", publicKey, checker, options);
+
+    expect(calls).toBe(1);
+    expect(await second).toBeNull();
+    resolveResponse!(new Response(JSON.stringify(signed)));
+    await expect(first).resolves.toEqual(signed);
+  });
+
   it("counts failed attempts against the rate limit", async () => {
     const checker = new UpdateChecker(100);
     const now = () => 1_000;
@@ -156,8 +195,8 @@ describe("signed release metadata", () => {
       throw new Error("offline");
     };
 
-    await expect(checkSignedRelease("https://updates.test/release.json", publicKey, checker, { now, fetcher })).resolves.toBeNull();
-    await expect(checkSignedRelease("https://updates.test/release.json", publicKey, checker, { now, fetcher })).resolves.toBeNull();
+    await expect(checkSignedRelease("https://updates.test/release.json", publicKey, checker, { currentVersion: "0.1.0", now, fetcher })).resolves.toBeNull();
+    await expect(checkSignedRelease("https://updates.test/release.json", publicKey, checker, { currentVersion: "0.1.0", now, fetcher })).resolves.toBeNull();
 
     expect(calls).toBe(1);
   });
