@@ -44,6 +44,7 @@ afterEach(async () => {
   probe.missing = false;
   probe.offset = 0;
   delete process.env.THEAIHATCH_SMOKE_TEST_SECRET;
+  delete process.env.THEAIHATCH_SMOKE_TEST_UNLISTED;
   delete process.env.THEAIHATCH_SMOKE_TEST_MODE;
   delete process.env.THEAIHATCH_SMOKE_TEST_DIAGNOSTIC;
   for (const directory of directories.splice(0)) await fs.rm(directory, { recursive: true, force: true });
@@ -57,10 +58,12 @@ async function temporaryDirectory(): Promise<string> {
 
 const fixtureSource = `
   import http from "node:http";
+  import { spawn } from "node:child_process";
+  import { appendFileSync, writeFileSync } from "node:fs";
   import os from "node:os";
   import path from "node:path";
   const mode = process.env.THEAIHATCH_SMOKE_TEST_MODE;
-  const secret = process.env.THEAIHATCH_SMOKE_TEST_SECRET ?? "";
+  const secret = process.env.THEAIHATCH_SMOKE_TEST_UNLISTED ?? process.env.THEAIHATCH_SMOKE_TEST_SECRET ?? "";
   if (process.argv.length !== 2 || process.env.THEAIHATCH_AUTO_OPEN !== "0" || process.env.THEAIHATCH_UPDATE_URL !== "" || process.env.THEAIHATCH_UPDATES_DISABLED !== "1" || process.env.PORT !== "0" || process.env.NODE_PATH !== "" || process.env.NODE_OPTIONS !== "" || process.env.PATH !== "" || !os.homedir().startsWith(process.cwd() + path.sep)) {
     console.error("smoke environment was not isolated", JSON.stringify({ argc: process.argv.length, homeIsolated: os.homedir().startsWith(process.cwd() + path.sep), pathEmpty: process.env.PATH === "", nodePathEmpty: process.env.NODE_PATH === "", nodeOptionsEmpty: process.env.NODE_OPTIONS === "" }));
     process.exit(17);
@@ -71,6 +74,17 @@ const fixtureSource = `
   } else if (mode === "exit") {
     process.stdout.write("stdout-before-exit\\n");
     process.stderr.write("stderr-before-exit " + secret + "\\n", () => process.exit(7));
+  } else if (mode === "orphan-parent") {
+    const marker = process.env.THEAIHATCH_SMOKE_TEST_MARKER;
+    if (marker === undefined) process.exit(18);
+    writeFileSync(marker, "parent\\n");
+    spawn(process.execPath, [], { env: { ...process.env, THEAIHATCH_SMOKE_TEST_MODE: "orphan-child" }, stdio: "ignore" });
+    setTimeout(() => process.exit(0), 100);
+  } else if (mode === "orphan-child") {
+    const marker = process.env.THEAIHATCH_SMOKE_TEST_MARKER;
+    if (marker === undefined) process.exit(19);
+    const interval = setInterval(() => appendFileSync(marker, "child\\n"), 25);
+    process.once("SIGINT", () => { clearInterval(interval); process.exit(0); });
   } else if (mode === "fallback") {
     console.error(process.env.THEAIHATCH_SMOKE_TEST_DIAGNOSTIC);
     process.stderr.write("x".repeat(20000));
@@ -121,10 +135,10 @@ smokeIt("starts the readiness budget after synchronous OS process creation retur
 }, 60_000);
 
 smokeIt("retains readiness through an output flood and redacts secrets split across stderr chunks", async () => {
-  process.env.THEAIHATCH_SMOKE_TEST_SECRET = "smoke-secret-value";
+  process.env.THEAIHATCH_SMOKE_TEST_UNLISTED = "unlisted-secret-value";
   process.env.THEAIHATCH_SMOKE_TEST_MODE = "verbose";
   const result = await runPackageSmoke({ executable, dataDirectory: await temporaryDirectory(), timeoutMs: 5_000 });
-  expect(result.stderr).not.toContain("smoke-secret-value");
+  expect(result.stderr).not.toContain("unlisted-secret-value");
   expect(result.stderr).toContain("[REDACTED]");
   expect(result.stderr.length).toBeLessThanOrEqual(16_384);
 }, 60_000);
@@ -153,8 +167,11 @@ smokeIt("captures both output streams on an immediate nonzero exit and redacts t
 
 smokeIt.each([
   ["Node invocation", "fallback: spawn node.exe"],
+  ["quoted Node invocation", 'fallback: spawn("node")'],
   ["repository node_modules read", "fallback: read " + path.resolve(import.meta.dirname, "../../..", "node_modules/keytar/index.js")],
   ["repository-relative asset", "fallback: read apps/web/dist/index.html"],
+  ["server source asset", "fallback: read apps/server/src/index.ts"],
+  ["dist asset", "fallback: read dist/index.html"],
 ])("rejects %s even before a diagnostic flood", async (_name, diagnostic) => {
   process.env.THEAIHATCH_SMOKE_TEST_MODE = "fallback";
   process.env.THEAIHATCH_SMOKE_TEST_DIAGNOSTIC = diagnostic;
@@ -170,4 +187,17 @@ smokeIt("terminates a child that does not cooperate with SIGINT", async () => {
   process.env.THEAIHATCH_SMOKE_TEST_MODE = "stubborn";
   await expect(runPackageSmoke({ executable, dataDirectory: await temporaryDirectory(), timeoutMs: 5_000 })).resolves.toMatchObject({ healthStatus: 200 });
   expect(probe.child?.exitCode !== null || probe.child?.signalCode !== null).toBe(true);
+}, 60_000);
+
+smokeIt("terminates descendants when the executable exits first", async () => {
+  const dataDirectory = await temporaryDirectory();
+  const marker = path.join(dataDirectory, "descendant.log");
+  process.env.THEAIHATCH_SMOKE_TEST_MODE = "orphan-parent";
+  process.env.THEAIHATCH_SMOKE_TEST_MARKER = marker;
+  await expect(runPackageSmoke({ executable, dataDirectory, timeoutMs: 5_000 })).rejects.toThrow(/exit code 0/);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const afterTermination = await fs.stat(marker);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const afterWait = await fs.stat(marker);
+  expect(afterWait.size).toBe(afterTermination.size);
 }, 60_000);

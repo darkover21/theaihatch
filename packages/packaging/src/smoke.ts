@@ -27,7 +27,9 @@ interface CapturedOutput {
   stdout: string;
   combinedTail: string;
   readinessTail: string;
+  descendantPids: Set<number>;
   readinessUrl?: string;
+  descendantQuery?: Promise<void>;
   forbiddenFallback: boolean;
   error?: Error;
 }
@@ -45,7 +47,7 @@ export async function runPackageSmoke(options: SmokeOptions): Promise<SmokeResul
   await fs.mkdir(dataDirectory, { recursive: true });
   const workingDirectory = await fs.mkdtemp(path.join(dataDirectory, ".package-smoke-"));
   let child: ChildProcess | undefined;
-  let captured: CapturedOutput = { stderr: "", stdout: "", combinedTail: "", readinessTail: "", forbiddenFallback: false };
+  let captured: CapturedOutput = { stderr: "", stdout: "", combinedTail: "", readinessTail: "", descendantPids: new Set(), forbiddenFallback: false };
   const sensitiveValues = sensitiveEnvironmentValues(process.env);
 
   try {
@@ -58,7 +60,7 @@ export async function runPackageSmoke(options: SmokeOptions): Promise<SmokeResul
       env: isolatedEnvironment(home, workingDirectory),
       stdio: ["ignore", "pipe", "pipe"],
     });
-    captured = captureOutput(child, sensitiveValues);
+    captured = captureOutput(child);
     // spawn() can synchronously block in OS executable validation. The
     // readiness budget starts once creation returns and events can be observed.
     const deadline = Date.now() + timeoutMs;
@@ -70,12 +72,14 @@ export async function runPackageSmoke(options: SmokeOptions): Promise<SmokeResul
     if (rootStatus !== 200) throw smokeFailure(`Smoke / returned HTTP ${rootStatus}`, executable, captured, sensitiveValues);
     await delay(150);
     assertNoForbiddenFallback(captured, executable, sensitiveValues);
-    await terminate(child, executable);
+    await terminate(child, executable, captured);
     return { healthStatus, rootStatus, stderr: sanitize(captured.stderr, sensitiveValues) };
   } catch (error) {
-    if (child !== undefined) await terminate(child, executable);
+    if (child !== undefined) await terminate(child, executable, captured);
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(sanitize(message, sensitiveValues), { cause: error });
+    const marker = "__THEAIHATCH_SMOKE_EXECUTABLE__";
+    const safeMessage = sanitize(message.split(executable).join(marker), sensitiveValues).split(marker).join(executable);
+    throw new Error(safeMessage, { cause: error });
   } finally {
     await fs.rm(workingDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
@@ -113,9 +117,10 @@ function isolatedEnvironment(home: string, workingDirectory: string): NodeJS.Pro
   };
 }
 
-function captureOutput(child: ChildProcess, sensitiveValues: readonly string[]): CapturedOutput {
-  const captured: CapturedOutput = { stderr: "", stdout: "", combinedTail: "", readinessTail: "", forbiddenFallback: false };
+function captureOutput(child: ChildProcess): CapturedOutput {
+  const captured: CapturedOutput = { stderr: "", stdout: "", combinedTail: "", readinessTail: "", descendantPids: new Set(), forbiddenFallback: false };
   child.on("error", (error) => { captured.error = error; });
+  if (process.platform === "win32") child.once("exit", () => { void trackDescendants(captured, child.pid); });
   const append = (stream: "stderr" | "stdout", chunk: Buffer | string): void => {
     const text = chunk.toString();
     captured[stream] = appendBounded(captured[stream], text);
@@ -128,7 +133,7 @@ function captureOutput(child: ChildProcess, sensitiveValues: readonly string[]):
       }
       captured.readinessTail = appendBounded(readinessText, "", 512);
     }
-    if (containsForbiddenFallback(sanitize(text, sensitiveValues))) captured.forbiddenFallback = true;
+    if (containsForbiddenFallback(text)) captured.forbiddenFallback = true;
   };
   child.stdout?.on("data", (chunk: Buffer | string) => append("stdout", chunk));
   child.stderr?.on("data", (chunk: Buffer | string) => append("stderr", chunk));
@@ -176,7 +181,7 @@ async function requestStatus(url: URL, executable: string, deadline: number, cap
 }
 
 function assertNoForbiddenFallback(captured: CapturedOutput, executable: string, sensitiveValues: readonly string[]): void {
-  const output = sanitize(captured.combinedTail, sensitiveValues).split("\\0").join("");
+  const output = captured.combinedTail.split("\\0").join("");
   if (captured.forbiddenFallback || containsForbiddenFallback(output)) {
     throw smokeFailure("Smoke executable reported forbidden fallback", executable, captured, sensitiveValues);
   }
@@ -185,10 +190,14 @@ function assertNoForbiddenFallback(captured: CapturedOutput, executable: string,
 function containsForbiddenFallback(output: string): boolean {
   const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..").split(path.sep).join("/");
   const normalized = output.split("\\").join("/");
+  const nodeInvocation = /\b(?:spawn|spawnSync|exec|execFile|execFileSync|fork)\b[^\r\n]*\bnode(?:\.exe)?\b/iu.test(normalized) ||
+    /(?:^|[^a-z0-9_./-])node(?:\.exe)?(?:$|[\s"'`])/iu.test(normalized);
+  const repositoryRelativePath = /(?:^|[^a-z0-9_])(?:apps|packages|dist|node_modules)\/[^\s"'`<>]+/iu.test(normalized);
   return (
-    /(?:spawn|exec(?:File)?)\s+(?:[^\n]*\s)?node(?:\.exe)?\b|child[_ -]?process|process\.execPath/iu.test(output) ||
+    nodeInvocation ||
+    /child[_ -]?process|process\.execPath/iu.test(output) ||
     normalized.includes(`${repository}/node_modules/`) ||
-    /(?:^|[\s:])(?:apps\/web\/(?:dist|src)|packages\/[^\s:]+\/src)\//imu.test(normalized)
+    repositoryRelativePath
   );
 }
 
@@ -204,21 +213,31 @@ function smokeFailure(prefix: string, executable: string, captured: CapturedOutp
   return new Error(`${prefix}: ${executable}${suffix}`, { cause });
 }
 
-async function terminate(child: ChildProcess, executable: string): Promise<void> {
-  if (exited(child) !== undefined) return;
-  const siblingPids = process.platform === "win32"
-    ? await matchedWindowsChildPids(executable)
-    : [];
+async function terminate(child: ChildProcess, executable: string, captured: CapturedOutput): Promise<void> {
+  if (process.platform === "win32" && child.pid !== undefined) {
+    if (exited(child) === undefined) {
+      await trackDescendants(captured, child.pid);
+    } else {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (captured.descendantQuery === undefined) await trackDescendants(captured, child.pid);
+      else await captured.descendantQuery;
+    }
+  }
+  if (exited(child) !== undefined) {
+    await Promise.all([...captured.descendantPids].map(forceWindowsTree));
+    return;
+  }
   child.kill("SIGINT");
   const clean = await waitForExit(child, shutdownTimeoutMs);
+  if (captured.descendantQuery !== undefined) await captured.descendantQuery;
   if (clean) {
-    await Promise.all(siblingPids.filter((pid) => pid !== child.pid).map(forceWindowsTree));
+    await Promise.all([...captured.descendantPids].map(forceWindowsTree));
     return;
   }
 
   if (process.platform === "win32" && child.pid !== undefined) {
     await forceWindowsTree(child.pid);
-    await Promise.all(siblingPids.filter((pid) => pid !== child.pid).map(forceWindowsTree));
+    await Promise.all([...captured.descendantPids].map(forceWindowsTree));
   } else {
     child.kill("SIGKILL");
   }
@@ -229,17 +248,29 @@ async function forceWindowsTree(pid: number): Promise<void> {
   try { await runFile("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true }); } catch { /* Process can exit while taskkill starts. */ }
 }
 
-async function matchedWindowsChildPids(executable: string): Promise<number[]> {
+async function trackDescendants(captured: CapturedOutput, rootPid: number | undefined): Promise<void> {
+  if (process.platform !== "win32" || rootPid === undefined) return;
+  const query = windowsDescendantPids(rootPid).then((pids) => {
+    for (const pid of pids) captured.descendantPids.add(pid);
+  }, () => undefined);
+  captured.descendantQuery = query;
+  await query;
+}
+
+async function windowsDescendantPids(rootPid: number): Promise<number[]> {
   const script = [
-    "$target = $env:THEAIHATCH_SMOKE_TRACKED_EXECUTABLE",
-    "$parent = [int]$env:THEAIHATCH_SMOKE_PARENT_PID",
-    "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $parent -and ($_.ExecutablePath -eq $target -or ($_.CommandLine -replace '^\\\"|\\\"$') -eq $target) } | ForEach-Object { $_.ProcessId }",
+    "$root = [int]$env:THEAIHATCH_SMOKE_ROOT_PID",
+    "$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId)",
+    "$pending = @($root)",
+    "$found = @()",
+    "while ($pending.Count -gt 0) { $parentId = $pending[0]; if ($pending.Count -eq 1) { $pending = @() } else { $pending = @($pending[1..($pending.Count - 1)]) }; foreach ($item in @($all | Where-Object { [int]$_.ParentProcessId -eq $parentId })) { $childPid = [int]$item.ProcessId; if ($found -notcontains $childPid) { $found += $childPid; $pending += $childPid } } }",
+    "$found",
   ].join("; ");
   try {
     const { stdout } = await runFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
       windowsHide: true,
       timeout: 2_000,
-      env: { ...process.env, THEAIHATCH_SMOKE_TRACKED_EXECUTABLE: executable, THEAIHATCH_SMOKE_PARENT_PID: String(process.pid) },
+      env: { ...process.env, THEAIHATCH_SMOKE_ROOT_PID: String(rootPid) },
     });
     return stdout.split(/\s+/u).map(Number).filter((candidate) => Number.isSafeInteger(candidate) && candidate > 0);
   } catch {
@@ -264,7 +295,11 @@ function appendBounded(existing: string, next: string, limit = stderrLimit): str
 
 function sensitiveEnvironmentValues(environment: NodeJS.ProcessEnv): string[] {
   return Object.entries(environment)
-    .filter(([key, value]) => value !== undefined && /(?:secret|token|password|authorization|cookie|api[_-]?key)/iu.test(key))
+    .filter(([key, value]) => {
+      if (value === undefined || value.length === 0) return false;
+      const secretKey = /(?:secret|token|password|authorization|cookie|api[_-]?key)/iu.test(key);
+      return secretKey || (value.length >= 12 && !/[\\/:]/u.test(value));
+    })
     .map(([, value]) => value!)
     .filter((value) => value.length > 0)
     .sort((left, right) => right.length - left.length);
