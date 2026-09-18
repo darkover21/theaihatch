@@ -119,7 +119,7 @@
 - [ ] Compute stable file/hunk diffs and fingerprints → `packages/review/src/diff.ts`
 - [ ] Apply independent accept/reject decisions with stale-hunk detection → `packages/review/src/apply.ts`
 - [ ] Implement review gate and structured rejection feedback in the agent loop → `packages/agent/src/review-gate.ts`
-- [ ] Build diff review, hunk actions, feedback, and event-seek links → `apps/web/src/features/review/ReviewPanel.tsx`
+- [x] Build diff review, hunk actions, feedback, and event-seek links → `apps/web/src/features/review/ReviewPanel.tsx`
 - [ ] Add escape, dirty-checkpoint, revert, destructive-command, dry-run, and mixed-hunk end-to-end tests → `apps/server/test/safety-review.e2e.test.ts`
 
 **Exit criteria**
