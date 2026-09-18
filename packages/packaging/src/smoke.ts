@@ -28,6 +28,8 @@ interface CapturedOutput {
   combinedTail: string;
   readinessTail: string;
   descendantProcesses: Map<number, WindowsProcessIdentity>;
+  rootProcessIdentity?: WindowsProcessIdentity;
+  rootIdentityQuery?: Promise<void>;
   readinessUrl?: string;
   descendantQuery?: Promise<void>;
   forbiddenFallback: boolean;
@@ -123,7 +125,13 @@ function isolatedEnvironment(home: string, workingDirectory: string): NodeJS.Pro
 function captureOutput(child: ChildProcess): CapturedOutput {
   const captured: CapturedOutput = { stderr: "", stdout: "", combinedTail: "", readinessTail: "", descendantProcesses: new Map(), forbiddenFallback: false };
   child.on("error", (error) => { captured.error = error; });
-  if (process.platform === "win32") child.once("exit", () => { void trackDescendants(captured, child.pid); });
+  if (process.platform === "win32" && child.pid !== undefined) {
+    const rootIdentityQuery = windowsProcessIdentity(child.pid).then((identity) => {
+      if (identity !== undefined && exited(child) === undefined) captured.rootProcessIdentity = identity;
+    }, () => undefined);
+    captured.rootIdentityQuery = rootIdentityQuery;
+    child.once("exit", () => { void trackDescendants(captured, child.pid); });
+  }
   const append = (stream: "stderr" | "stdout", chunk: Buffer | string): void => {
     const text = chunk.toString();
     captured[stream] = appendBounded(captured[stream], text);
@@ -217,7 +225,10 @@ function smokeFailure(prefix: string, executable: string, captured: CapturedOutp
 }
 
 async function terminate(child: ChildProcess, executable: string, captured: CapturedOutput): Promise<void> {
+  let rootIdentity: WindowsProcessIdentity | undefined;
   if (process.platform === "win32" && child.pid !== undefined) {
+    if (captured.rootIdentityQuery !== undefined) await captured.rootIdentityQuery;
+    rootIdentity = captured.rootProcessIdentity;
     if (exited(child) === undefined) {
       await trackDescendants(captured, child.pid);
     } else {
@@ -230,9 +241,6 @@ async function terminate(child: ChildProcess, executable: string, captured: Capt
     await Promise.all([...captured.descendantProcesses.values()].map(terminateWindowsProcessTree));
     return;
   }
-  const rootIdentity = process.platform === "win32" && child.pid !== undefined
-    ? await windowsProcessIdentity(child.pid)
-    : undefined;
   child.kill("SIGINT");
   const clean = await waitForExit(child, shutdownTimeoutMs);
   if (captured.descendantQuery !== undefined) await captured.descendantQuery;
