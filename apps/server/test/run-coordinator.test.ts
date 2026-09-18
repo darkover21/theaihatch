@@ -4,12 +4,15 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderAdapter, ProviderModel, ProviderRequest, ProviderStreamEvent } from "@theaihatch/providers";
 import type { GitCheckpoint } from "@theaihatch/safety";
+import { ConversationRepository } from "@theaihatch/storage";
+import { SesWriter } from "@theaihatch/ses";
 import { WorkspaceTree } from "@theaihatch/workspace";
 import { RunCoordinator, type StartRunInput } from "../src/agent/run-coordinator.js";
 
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(temporaryDirectories.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })));
 });
 
@@ -49,7 +52,7 @@ class FakeCheckpointStore {
   }
 }
 
-async function fixture(options: { provider?: FakeProvider; checkpointStore?: FakeCheckpointStore; reviewMode?: boolean } = {}): Promise<{ coordinator: RunCoordinator; input: StartRunInput; provider: FakeProvider; checkpointStore: FakeCheckpointStore }> {
+async function fixture(options: { provider?: FakeProvider; checkpointStore?: FakeCheckpointStore; reviewMode?: boolean } = {}): Promise<{ coordinator: RunCoordinator; dataDirectory: string; input: StartRunInput; provider: FakeProvider; checkpointStore: FakeCheckpointStore }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "theaihatch-run-coordinator-root-"));
   const dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "theaihatch-run-coordinator-data-"));
   temporaryDirectories.push(root, dataDirectory);
@@ -59,6 +62,7 @@ async function fixture(options: { provider?: FakeProvider; checkpointStore?: Fak
   const coordinator = new RunCoordinator({ checkpointStore, dataDirectory });
   return {
     coordinator,
+    dataDirectory,
     provider,
     checkpointStore,
     input: {
@@ -137,5 +141,61 @@ describe("run coordinator", () => {
 
     expect(coordinator.get(run.runId).proposals).toEqual([]);
     expect(coordinator.get(run.runId).status).toBe("cancelled");
+  });
+
+  it("cancels an active guarded command and records a cancelled tool result", async () => {
+    const { coordinator, input } = await fixture();
+    const executable = process.platform === "win32" ? `"${process.execPath}"` : process.execPath;
+    const provider: ProviderAdapter = {
+      id: "openai",
+      async listModels() { return [{ id: "fake", displayName: "fake" }]; },
+      async testConnection() { return { reachable: true, authenticated: true, modelAvailable: true, message: "ok" }; },
+      async *stream(request): AsyncIterable<ProviderStreamEvent> {
+        if (request.messages.some((message) => message.role === "tool")) {
+          yield { type: "completed", reason: "stop" };
+          return;
+        }
+        yield { type: "tool_call", call: { id: "command-1", name: "run_command", arguments: { command: `${executable} -e "console.log('started'); setTimeout(() => console.log('finished'), 5000)"` } } };
+        yield { type: "completed", reason: "tool_calls" };
+      }
+    };
+
+    const run = await coordinator.start({ ...input, createProvider: () => provider });
+    await vi.waitFor(() => expect(coordinator.get(run.runId).events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "terminal_output", payload: expect.objectContaining({ chunk: "started\n" }) })
+    ])));
+    coordinator.cancel(run.runId);
+    await waitForTerminal(coordinator, run.runId);
+
+    const toolResult = coordinator.get(run.runId).events.find((event) => event.type === "agent_tool_result");
+    expect(toolResult).toMatchObject({ payload: { ok: false, errorCode: "cancelled" } });
+    expect(coordinator.get(run.runId).status).toBe("cancelled");
+    expect(coordinator.get(run.runId).events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "terminal_output", payload: expect.objectContaining({ chunk: "finished\n" }) })
+    ]));
+  });
+
+  it("persists a failed terminal status when final checkpointing fails", async () => {
+    const { coordinator, dataDirectory, input } = await fixture();
+    vi.spyOn(SesWriter.prototype, "appendCheckpoint").mockRejectedValueOnce(new Error("final checkpoint unavailable"));
+
+    const run = await coordinator.start(input);
+    await waitForTerminal(coordinator, run.runId);
+
+    expect(coordinator.get(run.runId)).toMatchObject({ status: "failed", error: "final checkpoint unavailable" });
+    const conversations = new ConversationRepository(path.join(dataDirectory, "conversations.sqlite"));
+    try {
+      expect(conversations.getRun(run.runId)).toMatchObject({ status: "failed", endedAt: expect.any(String), error: "final checkpoint unavailable" });
+    } finally {
+      conversations.close();
+    }
+  });
+
+  it("closes the opened writer when startup fails after writer creation", async () => {
+    const { coordinator, dataDirectory, input } = await fixture();
+    await fs.mkdir(path.join(dataDirectory, "conversations.sqlite"));
+
+    await expect(coordinator.start(input)).rejects.toThrow();
+    await expect(fs.rm(dataDirectory, { recursive: true, force: true })).resolves.toBeUndefined();
   });
 });

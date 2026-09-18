@@ -7,6 +7,7 @@ export interface RecordedCommand {
   cwd?: string;
   shell?: string;
   commandId?: string;
+  signal?: AbortSignal;
 }
 
 export class TerminalRecorder {
@@ -19,6 +20,7 @@ export class TerminalRecorder {
     await this.writer.append({ type: "terminal_command", payload: { commandId, command: input.command, cwd, shell } });
     let writes = Promise.resolve();
     const handle = this.runner.start({ command: input.command, cwd, shell }, {
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
       onChunk: (chunk) => {
         writes = writes.then(async () => {
           await this.writer.append({ type: "terminal_output", payload: { commandId, stream: chunk.stream, chunk: chunk.chunk, eof: false } });

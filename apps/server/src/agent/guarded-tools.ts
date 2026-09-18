@@ -133,7 +133,7 @@ async function editFile(context: GuardedToolContext, pathPolicy: PathPolicy, arg
   return { ok: true, content: { path: filePath, contentHash: hashContent(after), ...(snapshotId === undefined ? {} : { snapshotId }) } };
 }
 
-async function runCommand(context: GuardedToolContext, argumentsValue: unknown): Promise<AgentToolResult> {
+async function runCommand(context: GuardedToolContext, argumentsValue: unknown, signal: AbortSignal): Promise<AgentToolResult> {
   let argumentsObject: Record<string, unknown>;
   let command: string;
   try { argumentsObject = objectArguments(argumentsValue); command = stringArgument(argumentsObject, "command"); } catch (error) {
@@ -162,7 +162,7 @@ async function runCommand(context: GuardedToolContext, argumentsValue: unknown):
     return { ok: true, content: { command, cwd, suppressed: true } };
   }
   const terminal = new TerminalRecorder(context.writer, new ProcessRunner(context.tree.root));
-  const result = await terminal.run({ command, cwd: context.tree.normalize(requestedCwd) });
+  const result = await terminal.run({ command, cwd: context.tree.normalize(requestedCwd), signal });
   return { ok: result.status === "exited", content: result, ...(result.status === "exited" ? {} : { errorCode: result.status }) };
 }
 
@@ -171,6 +171,6 @@ export async function createGuardedWorkspaceTools(context: GuardedToolContext): 
   return [
     { name: "read_file", execute: (argumentsValue) => readFile(context, pathPolicy, argumentsValue) },
     { name: "edit_file", execute: (argumentsValue) => editFile(context, pathPolicy, argumentsValue) },
-    { name: "run_command", execute: (argumentsValue) => runCommand(context, argumentsValue) }
+    { name: "run_command", execute: (argumentsValue, signal) => runCommand(context, argumentsValue, signal) }
   ];
 }

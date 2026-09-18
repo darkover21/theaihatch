@@ -77,35 +77,47 @@ export class RunCoordinator {
     const provider = await input.createProvider();
     const runId = randomUUID();
     const conversationId = randomUUID();
-    await fs.mkdir(this.dataDirectory, { recursive: true });
-    const writer = await SesWriter.open(path.join(this.dataDirectory, "agent-runs", runId));
-    const conversations = new ConversationRepository(path.join(this.dataDirectory, "conversations.sqlite"));
-    const reviews = new ReviewRepository(this.dataDirectory);
-    const audits = new SafetyAuditRepository(this.dataDirectory);
-    const record: RunRecord = {
-      runId,
-      conversationId,
-      checkpoint,
-      status: "running",
-      events: [],
-      approvals: new ApprovalBroker(),
-      proposals: new DryRunRecorder(input.dryRun),
-      usage: zeroUsage(),
-      error: null,
-      abortController: new AbortController(),
-      writer,
-      conversations,
-      reviews,
-      audits,
-      reviewGate: new ReviewGate(),
-      input
-    };
-    conversations.createConversation({ id: conversationId, workspacePath: input.tree.root.canonicalPath, createdAt: new Date().toISOString() });
-    conversations.createRun({ id: runId, conversationId, status: "running", startedAt: new Date().toISOString(), endedAt: null, error: null });
-    reviews.recordCheckpoint({ runId, checkpointId: checkpoint.id, kind: "run" });
-    this.runs.set(runId, record);
-    void this.execute(record, provider);
-    return { runId, checkpointId: checkpoint.id };
+    let writer: SesWriter | undefined;
+    let conversations: ConversationRepository | undefined;
+    let reviews: ReviewRepository | undefined;
+    let audits: SafetyAuditRepository | undefined;
+    try {
+      await fs.mkdir(this.dataDirectory, { recursive: true });
+      writer = await SesWriter.open(path.join(this.dataDirectory, "agent-runs", runId));
+      conversations = new ConversationRepository(path.join(this.dataDirectory, "conversations.sqlite"));
+      reviews = new ReviewRepository(this.dataDirectory);
+      audits = new SafetyAuditRepository(this.dataDirectory);
+      const record: RunRecord = {
+        runId,
+        conversationId,
+        checkpoint,
+        status: "running",
+        events: [],
+        approvals: new ApprovalBroker(),
+        proposals: new DryRunRecorder(input.dryRun),
+        usage: zeroUsage(),
+        error: null,
+        abortController: new AbortController(),
+        writer,
+        conversations,
+        reviews,
+        audits,
+        reviewGate: new ReviewGate(),
+        input
+      };
+      conversations.createConversation({ id: conversationId, workspacePath: input.tree.root.canonicalPath, createdAt: new Date().toISOString() });
+      conversations.createRun({ id: runId, conversationId, status: "running", startedAt: new Date().toISOString(), endedAt: null, error: null });
+      reviews.recordCheckpoint({ runId, checkpointId: checkpoint.id, kind: "run" });
+      this.runs.set(runId, record);
+      void this.execute(record, provider);
+      return { runId, checkpointId: checkpoint.id };
+    } catch (error) {
+      await closeWriter(writer);
+      closeRepository(audits);
+      closeRepository(reviews);
+      closeRepository(conversations);
+      throw error;
+    }
   }
 
   get(runId: string): RunStatusView {
@@ -191,6 +203,10 @@ export class RunCoordinator {
       outcome = record.abortController.signal.aborted ? "cancelled" : "failed";
       record.error = error instanceof Error ? error.message : String(error);
     }
+    const failFinalization = (error: unknown): void => {
+      outcome = "failed";
+      record.error ??= error instanceof Error ? error.message : String(error);
+    };
     try {
       if (result !== null) {
         for (const message of result.messages.filter((candidate) => candidate.role !== "system")) {
@@ -200,22 +216,16 @@ export class RunCoordinator {
       } else {
         record.conversations.saveUsage(record.runId, { ...record.usage, costUsd: null, priceVersion: "unpriced" });
       }
-      await record.writer.appendCheckpoint("final");
-      await record.writer.close();
-      record.conversations.updateRun(record.runId, outcome, new Date().toISOString(), record.error);
     } catch (error) {
-      outcome = "failed";
-      record.error = error instanceof Error ? error.message : String(error);
-    } finally {
-      try {
-        await record.writer.close();
-      } finally {
-        record.conversations.close();
-        record.reviews.close();
-        record.audits.close();
-        record.status = outcome;
-      }
+      failFinalization(error);
     }
+    try { await record.writer.appendCheckpoint("final"); } catch (error) { failFinalization(error); }
+    try { await record.writer.close(); } catch (error) { failFinalization(error); }
+    try { record.reviews.close(); } catch (error) { failFinalization(error); }
+    try { record.audits.close(); } catch (error) { failFinalization(error); }
+    try { record.conversations.updateRun(record.runId, outcome, new Date().toISOString(), record.error); } catch (error) { failFinalization(error); }
+    try { record.conversations.close(); } catch (error) { failFinalization(error); }
+    record.status = outcome;
   }
 
   private async append(record: RunRecord, event: SesEventInput): Promise<AnySesEvent[]> {
@@ -223,4 +233,13 @@ export class RunCoordinator {
     record.events.push(...appended);
     return appended;
   }
+}
+
+async function closeWriter(writer: SesWriter | undefined): Promise<void> {
+  if (writer === undefined) return;
+  try { await writer.close(); } catch { /* preserve the startup failure */ }
+}
+
+function closeRepository(repository: { close(): void } | undefined): void {
+  try { repository?.close(); } catch { /* preserve the startup failure */ }
 }
