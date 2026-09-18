@@ -57,6 +57,7 @@ interface RunRecord {
   audits: SafetyAuditRepository;
   reviewGate: ReviewGate;
   input: StartRunInput;
+  execution: Promise<void>;
 }
 
 const zeroUsage = (): ProviderUsage => ({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
@@ -103,13 +104,15 @@ export class RunCoordinator {
         reviews,
         audits,
         reviewGate: new ReviewGate(),
-        input
+        input,
+        execution: Promise.resolve()
       };
       conversations.createConversation({ id: conversationId, workspacePath: input.tree.root.canonicalPath, createdAt: new Date().toISOString() });
       conversations.createRun({ id: runId, conversationId, status: "running", startedAt: new Date().toISOString(), endedAt: null, error: null });
       reviews.recordCheckpoint({ runId, checkpointId: checkpoint.id, kind: "run" });
       this.runs.set(runId, record);
-      void this.execute(record, provider);
+      record.execution = this.execute(record, provider);
+      void record.execution;
       return { runId, checkpointId: checkpoint.id };
     } catch (error) {
       await closeWriter(writer);
@@ -153,6 +156,21 @@ export class RunCoordinator {
     if (terminal(record.status)) return;
     record.approvals.cancel(runId, "run cancelled");
     record.abortController.abort();
+  }
+
+  async shutdown(timeoutMs = 5_000): Promise<boolean> {
+    const active = [...this.runs.values()].filter((record) => !terminal(record.status));
+    for (const record of active) this.cancel(record.runId);
+    const drained = Promise.all(active.map((record) => record.execution)).then(() => true, () => false);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        drained,
+        new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs)); }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   private require(runId: string): RunRecord {

@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { buildPackage, buildPlan, bundleServer, hashEmbeddedAssets, hostTarget } from "../src/sea.js";
 import { writeSeaConfig } from "../src/build.js";
 
@@ -104,6 +104,16 @@ it("leaves no release or manifest when build inputs cannot be resolved", async (
   const output = path.join(root, "output");
   await expect(buildPackage({ projectRoot: root, outputDirectory: output, target: hostTarget(), releaseVersion: "1.2.3" })).rejects.toThrow();
   expect(await fs.readdir(path.join(output, hostTarget()))).toEqual([]);
+});
+
+it("removes the release directory when staging allocation fails", async () => {
+  const root = await temp();
+  const output = path.join(root, "output");
+  vi.spyOn(fs, "mkdtemp").mockRejectedValueOnce(new Error("staging allocation unavailable"));
+
+  await expect(buildPackage({ projectRoot, outputDirectory: output, target: hostTarget(), releaseVersion: "1.2.3" })).rejects.toThrow("staging allocation unavailable");
+  expect(await fs.readdir(path.join(output, hostTarget()))).toEqual([]);
+  vi.restoreAllMocks();
 });
 
 it("CLI plans the requested target and rejects build without an explicit target", () => {

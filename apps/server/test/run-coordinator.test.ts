@@ -175,6 +175,36 @@ describe("run coordinator", () => {
     ]));
   });
 
+  it("shutdown cancels an active provider run and waits for it to drain", async () => {
+    const { coordinator, input } = await fixture();
+    let providerStarted = false;
+    const provider: ProviderAdapter = {
+      id: "openai",
+      async listModels() { return [{ id: "fake", displayName: "fake" }]; },
+      async testConnection() { return { reachable: true, authenticated: true, modelAvailable: true, message: "ok" }; },
+      async *stream(request): AsyncIterable<ProviderStreamEvent> {
+        providerStarted = true;
+        await new Promise<void>((resolve, reject) => {
+          if (request.signal?.aborted === true) { reject(new Error("provider aborted")); return; }
+          request.signal?.addEventListener("abort", () => reject(new Error("provider aborted")), { once: true });
+        });
+        yield { type: "completed", reason: "stop" };
+      }
+    };
+
+    const run = await coordinator.start({ ...input, createProvider: () => provider });
+    try {
+      await vi.waitFor(() => expect(providerStarted).toBe(true));
+      await coordinator.shutdown(2_000);
+      expect(coordinator.get(run.runId).status).toBe("cancelled");
+    } finally {
+      if (!["completed", "cancelled", "failed", "limit_reached"].includes(coordinator.get(run.runId).status)) {
+        coordinator.cancel(run.runId);
+        await waitForTerminal(coordinator, run.runId);
+      }
+    }
+  });
+
   it("persists a failed terminal status when final checkpointing fails", async () => {
     const { coordinator, dataDirectory, input } = await fixture();
     vi.spyOn(SesWriter.prototype, "appendCheckpoint").mockRejectedValueOnce(new Error("final checkpoint unavailable"));

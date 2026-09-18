@@ -91,3 +91,17 @@ it("rejects relative cache overrides instead of resolving them against cwd", asy
   vi.stubEnv("THEAIHATCH_RUNTIME_CACHE", path.relative(process.cwd(), directory));
   expect(() => loadNativePackage("better-sqlite3")).toThrow(/absolute/);
 });
+
+it("rejects an existing cache directory beneath a symlinked ancestor", async () => {
+  const { loadNativePackage } = await fixture({ "node_modules/better-sqlite3/index.js": "module.exports = 42;" });
+  const cacheBase = directories.at(-1)!;
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "hatch-existing-cache-"));
+  directories.push(outside);
+  await fs.mkdir(path.join(outside, "existing"));
+  const junction = path.join(cacheBase, "junction");
+  await fs.symlink(outside, junction, process.platform === "win32" ? "junction" : "dir");
+  vi.stubEnv("THEAIHATCH_RUNTIME_CACHE", path.join(junction, "existing"));
+
+  expect(() => loadNativePackage("better-sqlite3")).toThrow(/symlink|directory/i);
+  expect(await fs.readdir(path.join(outside, "existing"))).toEqual([]);
+});

@@ -80,9 +80,12 @@ export async function buildPackage(options: SeaCommandOptions): Promise<Artifact
   // A release directory is published once. Never overwrite an earlier artifact
   // or leave its manifest describing a later failed build.
   await fs.mkdir(path.dirname(layout.stagingDirectory), { recursive: true });
-  await fs.mkdir(layout.stagingDirectory);
-  const staging = await fs.mkdtemp(path.join(path.dirname(layout.stagingDirectory), ".sea-build-"));
+  let staging: string | undefined;
+  let releaseDirectoryCreated = false;
   try {
+    await fs.mkdir(layout.stagingDirectory);
+    releaseDirectoryCreated = true;
+    staging = await fs.mkdtemp(path.join(path.dirname(layout.stagingDirectory), ".sea-build-"));
     const viteCli = path.join(path.dirname(require.resolve("vite/package.json")), "bin/vite.js");
     execFileSync(process.execPath, [viteCli, "build", "--config", path.join(projectRoot, "vite.config.ts"), "--outDir", path.join(staging, "web")], { cwd: projectRoot, encoding: "utf8", timeout: 120_000 });
     const { bundle, assets } = await serverBundle({ projectRoot, outputDirectory: staging });
@@ -104,9 +107,11 @@ export async function buildPackage(options: SeaCommandOptions): Promise<Artifact
     return manifest;
   } catch (error) {
     // This directory was exclusively created by this invocation.
-    await fs.rm(layout.stagingDirectory, { recursive: true, force: true });
+    if (releaseDirectoryCreated) await fs.rm(layout.stagingDirectory, { recursive: true, force: true });
     throw error;
-  } finally { await fs.rm(staging, { recursive: true, force: true }); }
+  } finally {
+    if (staging !== undefined) await fs.rm(staging, { recursive: true, force: true });
+  }
 }
 
 export async function discoverRuntimeAssets(projectRoot: string, outputDirectory: string): Promise<Record<string, string>> {

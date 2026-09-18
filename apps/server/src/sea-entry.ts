@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { loadNativePackage } from "../../../packages/packaging/src/runtime.js";
 import { createPackagedAssetProvider } from "./bootstrap/assets.js";
+import { createBoundedShutdownHandler } from "./bootstrap/shutdown.js";
 import { startServer } from "./bootstrap/start.js";
 import { MemoryKeychain } from "./secrets/keychain.js";
 
@@ -32,14 +33,10 @@ async function main(): Promise<void> {
   if (process.argv.includes("--theaihatch-verify")) return verifyArtifact();
   const assetProvider = await createPackagedAssetProvider();
   const server = await startServer({ assetProvider, autoOpen: process.env.THEAIHATCH_AUTO_OPEN !== "0" });
-  let closing = false;
-  const shutdown = async (): Promise<void> => {
-    if (closing) return;
-    closing = true;
-    await server.close();
-  };
-  process.once("SIGINT", () => void shutdown().catch(fail));
-  process.once("SIGTERM", () => void shutdown().catch(fail));
+  const coordinator = server.app.getDecorator<import("./agent/run-coordinator.js").RunCoordinator>("runCoordinator");
+  const shutdown = createBoundedShutdownHandler({ coordinator, closeServer: () => server.close() });
+  process.once("SIGINT", () => void shutdown());
+  process.once("SIGTERM", () => void shutdown());
   console.log(`theaihatch ready at ${server.url}`);
 }
 

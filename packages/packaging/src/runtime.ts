@@ -16,14 +16,19 @@ let runtime: { root: string; files: RuntimeMap["files"]; modules: Map<string, Ru
 function sha256(bytes: Buffer): string { return createHash("sha256").update(bytes).digest("hex"); }
 
 function ensureDirectory(directory: string): void {
-  if (!existsSync(directory)) {
-    const parent = path.dirname(directory);
-    if (parent !== directory) ensureDirectory(parent);
-    try { mkdirSync(directory, { mode: 0o700 }); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  const absolute = path.resolve(directory);
+  const root = path.parse(absolute).root;
+  let current = root;
+  const relative = path.relative(root, absolute);
+  for (const segment of relative.split(path.sep).filter((value) => value.length > 0)) {
+    current = path.join(current, segment);
+    if (!existsSync(current)) {
+      try { mkdirSync(current, { mode: 0o700 }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    }
+    const stat = lstatSync(current);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Unsafe runtime cache directory (symlink or non-directory): ${current}`);
   }
-  const stat = lstatSync(directory);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Unsafe runtime cache directory (symlink or non-directory): ${directory}`);
 }
 
 function extractedRuntime(): NonNullable<typeof runtime> {
@@ -33,7 +38,6 @@ function extractedRuntime(): NonNullable<typeof runtime> {
   const cacheDirectory = process.env.THEAIHATCH_RUNTIME_CACHE ?? path.join(userPaths().data, "runtime");
   if (!path.isAbsolute(cacheDirectory)) throw new Error("THEAIHATCH_RUNTIME_CACHE must be an absolute path");
   const root = path.join(cacheDirectory, sha256(bytes));
-  ensureDirectory(path.dirname(root));
   ensureDirectory(root);
   for (const [relative, asset] of Object.entries(map.files)) {
     if (relative.includes("\\") || relative.includes(":") || relative.includes("\0") || relative.split("/").some((part) => part === ".." || part === "." || part === "") || path.isAbsolute(relative)) throw new Error(`Invalid runtime asset: ${relative}`);
