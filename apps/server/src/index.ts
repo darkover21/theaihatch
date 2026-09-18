@@ -1,24 +1,10 @@
-import Fastify from "fastify";
-import { registerWorkspaceRoutes, type WorkspaceEventSink, WorkspaceRegistry } from "./routes/workspaces.js";
-import { registerAgentRoutes } from "./routes/agent.js";
-import { registerInboundMcp } from "./mcp/inbound-controller.js";
 import { initializeFirstRun } from "./bootstrap/first-run.js";
 import { findLoopbackPort, openBrowser } from "./bootstrap/listen.js";
 import { KeytarKeychain } from "./secrets/keychain.js";
 import { createMcpToken } from "@theaihatch/mcp-server";
-import { RunCoordinator } from "./agent/run-coordinator.js";
+import { createServer } from "./app.js";
 
-export function createServer(eventSink?: WorkspaceEventSink, mcpToken?: string) {
-  const app = Fastify({ logger: false });
-  app.get("/health", async () => ({ ok: true, phase: 2 }));
-  const registry = registerWorkspaceRoutes(app, new WorkspaceRegistry(eventSink));
-  const runCoordinator = new RunCoordinator();
-  registerAgentRoutes(app, registry, undefined, runCoordinator);
-  registerInboundMcp(app, registry, mcpToken);
-  app.decorate("workspaceRegistry", registry);
-  app.decorate("runCoordinator", runCoordinator);
-  return app;
-}
+export { createServer } from "./app.js";
 
 if (process.env.NODE_ENV !== "test") {
   await initializeFirstRun();
