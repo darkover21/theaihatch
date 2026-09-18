@@ -42,6 +42,22 @@ function defaultShell(): string {
   return process.env.SHELL ?? "/bin/sh";
 }
 
+function terminateProcess(child: ChildProcess): void {
+  if (process.platform !== "win32" || child.pid === undefined) {
+    child.kill();
+    return;
+  }
+  try {
+    const taskkill = process.env.SystemRoot === undefined ? "taskkill.exe" : `${process.env.SystemRoot}\\System32\\taskkill.exe`;
+    const killer = spawn(taskkill, ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+    const fallback = (): void => { child.kill(); };
+    killer.once("error", fallback);
+    killer.once("close", (exitCode) => { if (exitCode !== 0) fallback(); });
+  } catch {
+    child.kill();
+  }
+}
+
 function decodeStream(child: ChildProcess, stream: NodeJS.ReadableStream | null, channel: TerminalOutputStream, onChunk: (chunk: ProcessChunk) => void | Promise<void>): void {
   if (stream === null) return;
   const decoder = new StringDecoder("utf8");
@@ -84,8 +100,9 @@ export class ProcessRunner {
     decodeStream(child, child.stdout, "stdout", options.onChunk ?? (() => undefined));
     decodeStream(child, child.stderr, "stderr", options.onChunk ?? (() => undefined));
     const abort = (): void => {
+      if (cancelled || settled) return;
       cancelled = true;
-      child.kill();
+      terminateProcess(child);
     };
     if (options.signal?.aborted === true) abort();
     else options.signal?.addEventListener("abort", abort, { once: true });

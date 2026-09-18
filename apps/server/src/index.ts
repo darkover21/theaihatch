@@ -6,14 +6,17 @@ import { initializeFirstRun } from "./bootstrap/first-run.js";
 import { findLoopbackPort, openBrowser } from "./bootstrap/listen.js";
 import { KeytarKeychain } from "./secrets/keychain.js";
 import { createMcpToken } from "@theaihatch/mcp-server";
+import { RunCoordinator } from "./agent/run-coordinator.js";
 
 export function createServer(eventSink?: WorkspaceEventSink, mcpToken?: string) {
   const app = Fastify({ logger: false });
   app.get("/health", async () => ({ ok: true, phase: 2 }));
   const registry = registerWorkspaceRoutes(app, new WorkspaceRegistry(eventSink));
-  registerAgentRoutes(app, registry);
+  const runCoordinator = new RunCoordinator();
+  registerAgentRoutes(app, registry, undefined, runCoordinator);
   registerInboundMcp(app, registry, mcpToken);
   app.decorate("workspaceRegistry", registry);
+  app.decorate("runCoordinator", runCoordinator);
   return app;
 }
 
