@@ -28,12 +28,25 @@ interface VersionOneState {
   keychainVerified: boolean;
 }
 
+interface LoadedFirstRunState {
+  state: FirstRunState;
+  migratedFromVersionOne: boolean;
+}
+
 export async function initializeFirstRun(options: FirstRunOptions = {}): Promise<FirstRunState> {
   const dataDirectory = options.dataDirectory ?? userPaths().data;
   const verifyKeychain = options.verifyKeychain ?? (async () => true);
   const storageInitializer = options.initializeStorage ?? initializeStorage;
   const statePath = path.join(dataDirectory, "first-run.json");
-  let state = await loadState(statePath, dataDirectory);
+  const loadedState = await loadState(statePath, dataDirectory);
+  let state = loadedState.state;
+
+  if (loadedState.migratedFromVersionOne) {
+    await storageInitializer(dataDirectory);
+    state = { ...state, initialized: true, completedSteps: firstRunSteps };
+    await writeStateAtomically(statePath, state);
+    return state;
+  }
 
   if (!state.completedSteps.includes("directories")) {
     await fs.mkdir(dataDirectory, { recursive: true });
@@ -55,17 +68,20 @@ export async function initializeFirstRun(options: FirstRunOptions = {}): Promise
   return state;
 }
 
-async function loadState(statePath: string, dataDirectory: string): Promise<FirstRunState> {
+async function loadState(statePath: string, dataDirectory: string): Promise<LoadedFirstRunState> {
   try {
     const parsed: unknown = JSON.parse(await fs.readFile(statePath, "utf8"));
-    if (isVersionTwoState(parsed) && parsed.dataDirectory === dataDirectory) return parsed;
+    if (isVersionTwoState(parsed) && parsed.dataDirectory === dataDirectory) return { state: parsed, migratedFromVersionOne: false };
     if (isVersionOneState(parsed) && parsed.dataDirectory === dataDirectory) {
       return {
-        version: 2,
-        initialized: false,
-        dataDirectory,
-        keychainVerified: parsed.keychainVerified,
-        completedSteps: ["directories", "keychain"]
+        state: {
+          version: 2,
+          initialized: false,
+          dataDirectory,
+          keychainVerified: parsed.keychainVerified,
+          completedSteps: ["directories"]
+        },
+        migratedFromVersionOne: true
       };
     }
   } catch {
@@ -73,11 +89,14 @@ async function loadState(statePath: string, dataDirectory: string): Promise<Firs
   }
 
   return {
-    version: 2,
-    initialized: false,
-    dataDirectory,
-    keychainVerified: false,
-    completedSteps: []
+    state: {
+      version: 2,
+      initialized: false,
+      dataDirectory,
+      keychainVerified: false,
+      completedSteps: []
+    },
+    migratedFromVersionOne: false
   };
 }
 
@@ -113,9 +132,7 @@ function isVersionOneState(value: unknown): value is VersionOneState {
 
 function isCompletedSteps(value: unknown): value is FirstRunStep[] {
   if (!Array.isArray(value) || !value.every(isFirstRunStep)) return false;
-  const orderedSteps = firstRunSteps.filter((step) => value.includes(step));
-  if (orderedSteps.length !== value.length || !orderedSteps.every((step, index) => value[index] === step)) return false;
-  return !((value.includes("storage") || value.includes("keychain")) && !value.includes("directories"));
+  return firstRunSteps.slice(0, value.length).every((step, index) => value[index] === step);
 }
 
 function isFirstRunStep(value: unknown): value is FirstRunStep {

@@ -136,6 +136,29 @@ describe("first-run initialization", () => {
     expect(keychainChecks).toBe(1);
   });
 
+  it("restarts when a state skips storage before keychain", async () => {
+    const directory = await fixtureDirectory();
+    await fs.writeFile(statePath(directory), JSON.stringify({
+      version: 2,
+      initialized: false,
+      dataDirectory: directory,
+      keychainVerified: true,
+      completedSteps: ["directories", "keychain"]
+    }), "utf8");
+    let storageCalls = 0;
+    let keychainChecks = 0;
+
+    const state = await initializeFirstRun({
+      dataDirectory: directory,
+      initializeStorage: async () => { storageCalls += 1; },
+      verifyKeychain: async () => { keychainChecks += 1; return false; }
+    });
+
+    expect(storageCalls).toBe(1);
+    expect(keychainChecks).toBe(1);
+    expect(state).toMatchObject({ keychainVerified: false, completedSteps: ["directories", "storage", "keychain"] });
+  });
+
   it("migrates a valid version-1 state and runs only the new storage step", async () => {
     const directory = await fixtureDirectory();
     await fs.writeFile(statePath(directory), JSON.stringify({
