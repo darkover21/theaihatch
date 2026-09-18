@@ -10,6 +10,7 @@ import {
   seaBuildPlan,
   targetExecutableName,
   writeArtifactManifest,
+  writeSeaConfig,
 } from "../src/build.js";
 import type { NativeAddonAsset } from "../src/native.js";
 import { userPaths } from "../src/paths.js";
@@ -42,9 +43,12 @@ describe("packaging", () => {
         checksumPath: path.join("/tmp/out", target, "0.1.0", `${targetExecutableName(target, "0.1.0")}.sha256`),
       });
     }
+
+    expect(() => packageLayout("/tmp/out", "linux-x64", "../outside")).toThrow(/releaseVersion/u);
+    expect(() => packageLayout("/tmp/out", "linux-x64", "0.1.0/escaped")).toThrow(/releaseVersion/u);
   });
 
-  it("REQ-PKG-001: plans every release target with explicit web launcher and native assets", () => {
+  it("REQ-PKG-001: plans every release target with individual web launcher and native assets", async () => {
     const nativeAsset: NativeAddonAsset = {
       packageName: "better-sqlite3",
       packageRoot: "/runtime/better-sqlite3",
@@ -54,7 +58,15 @@ describe("packaging", () => {
     };
 
     for (const target of RELEASE_TARGETS) {
-      const layout = packageLayout("/tmp/out", target, "0.1.0");
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), "theaihatch-sea-plan-"));
+      temporaryDirectories.push(directory);
+      const layout = packageLayout(directory, target, "0.1.0");
+      const indexPath = path.join(layout.webDirectory, "index.html");
+      const scriptPath = path.join(layout.webDirectory, "assets", "app.js");
+      await fs.mkdir(path.dirname(scriptPath), { recursive: true });
+      await fs.writeFile(indexPath, "<main>theaihatch</main>", "utf8");
+      await fs.writeFile(scriptPath, "console.log('theaihatch');", "utf8");
+      await fs.writeFile(layout.launcherPath, "export {};", "utf8");
       const plan = seaBuildPlan(target, layout, [nativeAsset]);
       expect(plan).toMatchObject({
         target,
@@ -63,10 +75,18 @@ describe("packaging", () => {
         nativeAssets: [nativeAsset],
       });
       expect(plan.assets).toEqual({
-        web: layout.webDirectory,
         launcher: layout.launcherPath,
+        "web/assets/app.js": scriptPath,
+        "web/index.html": indexPath,
         [nativeAsset.assetKey]: nativeAsset.binaryPath,
       });
+      expect(Object.values(plan.assets)).not.toContain(layout.webDirectory);
+
+      const configPath = path.join(directory, "sea-config.json");
+      await writeSeaConfig(configPath, layout.launcherPath, plan.assets);
+      const config = JSON.parse(await fs.readFile(configPath, "utf8")) as { assets: Record<string, string> };
+      expect(config.assets["web/index.html"]).toBe(path.resolve(indexPath));
+      expect(config.assets["web/index.html"]).not.toBe(path.resolve(layout.webDirectory));
     }
   });
 
@@ -91,6 +111,17 @@ describe("packaging", () => {
     await writeArtifactManifest(manifestPath, manifest);
     await expect(fs.readFile(manifestPath, "utf8")).resolves.toBe(`${JSON.stringify(manifest, null, 2)}\n`);
     await expect(fs.readFile(path.join(directory, "theaihatch-0.1.0-linux-x64.sha256"), "utf8")).resolves.toBe(`${digest}  theaihatch-0.1.0-linux-x64\n`);
+
+    const reorderedManifest = {
+      embeddedAssetSha256: "embedded-digest",
+      executableSha256: digest,
+      executable: "theaihatch-0.1.0-linux-x64",
+      releaseVersion: "0.1.0",
+      target: "linux-x64" as const,
+      schemaVersion: 1 as const,
+    };
+    await writeArtifactManifest(manifestPath, reorderedManifest);
+    await expect(fs.readFile(manifestPath, "utf8")).resolves.toBe(`${JSON.stringify(manifest, null, 2)}\n`);
   });
 
   it("REQ-PKG-005: resolves platform data locations", () => {

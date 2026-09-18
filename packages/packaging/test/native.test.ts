@@ -34,4 +34,18 @@ describe("native addon inventory", () => {
     await expect(discoverNativeAddonAssets(projectRoot)).rejects.toThrow("better-sqlite3");
     await expect(discoverNativeAddonAssets(projectRoot)).rejects.toThrow(path.join(packageRoot, "build", "Release", "better_sqlite3.node"));
   });
+
+  it("REQ-PKG-001: rejects a stale native binary even when it is at the runtime path", async () => {
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "theaihatch-incompatible-native-"));
+    temporaryDirectories.push(projectRoot);
+    const packageRoot = path.join(projectRoot, "node_modules", "better-sqlite3");
+    const binaryPath = path.join(packageRoot, "build", "Release", "better_sqlite3.node");
+    await fs.mkdir(path.dirname(binaryPath), { recursive: true });
+    await fs.writeFile(path.join(packageRoot, "package.json"), '{"name":"better-sqlite3"}\n', "utf8");
+    await fs.writeFile(binaryPath, "stale binary for another platform", "utf8");
+    await fs.mkdir(path.join(packageRoot, "prebuilds", "stale"), { recursive: true });
+    await fs.writeFile(path.join(packageRoot, "prebuilds", "stale", "better_sqlite3.node"), "another stale binary", "utf8");
+
+    await expect(discoverNativeAddonAssets(projectRoot)).rejects.toThrow(/better-sqlite3.*current OS\/architecture/u);
+  });
 });
