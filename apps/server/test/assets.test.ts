@@ -30,6 +30,17 @@ describe("web asset providers", () => {
     await expect(provider.read("\0")).resolves.toBeNull();
   });
 
+  it("does not follow filesystem links outside the asset root", async () => {
+    const root = await fixture();
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "theaihatch-assets-outside-"));
+    temporaryDirectories.push(outside);
+    await fs.writeFile(path.join(outside, "secret.txt"), "private", "utf8");
+    await fs.symlink(outside, path.join(root, "assets", "outside"), process.platform === "win32" ? "junction" : "dir");
+    const provider = createFilesystemAssetProvider(root);
+
+    await expect(provider.read("/assets/outside/secret.txt")).resolves.toBeNull();
+  });
+
   it("maps logical web paths to embedded SEA asset keys", async () => {
     const assets = new Map<string, Buffer>([["web/index.html", Buffer.from("<main>embedded</main>")]]);
     const provider = createEmbeddedAssetProvider(async (key) => assets.get(key) ?? null);

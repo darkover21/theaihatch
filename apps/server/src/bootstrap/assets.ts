@@ -51,7 +51,12 @@ export function createFilesystemAssetProvider(root: string): AssetProvider {
       if (relativePath === "" || relativePath === ".." || relativePath.startsWith(`..${path.sep}`) || path.isAbsolute(relativePath)) return null;
 
       try {
-        return { body: await fs.readFile(assetPath), contentType: contentType(normalizedPath) };
+        const realRoot = await fs.realpath(resolvedRoot);
+        const realAssetPath = await fs.realpath(assetPath);
+        const realRelativePath = path.relative(realRoot, realAssetPath);
+        if (realRelativePath === "" || realRelativePath === ".." || realRelativePath.startsWith(`..${path.sep}`) || path.isAbsolute(realRelativePath)) return null;
+
+        return { body: await fs.readFile(realAssetPath), contentType: contentType(normalizedPath) };
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") return null;
