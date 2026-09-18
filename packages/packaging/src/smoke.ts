@@ -246,6 +246,7 @@ async function terminate(child: ChildProcess, executable: string, captured: Capt
     await Promise.all([...captured.descendantProcesses.values()].map(terminateWindowsProcessTree));
   } else {
     child.kill("SIGKILL");
+    await Promise.all([...captured.descendantProcesses.values()].map(terminateWindowsProcessTree));
   }
   await waitForExit(child, shutdownTimeoutMs);
 }
