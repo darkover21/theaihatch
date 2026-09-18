@@ -71,7 +71,7 @@ const fixtureSource = `
   if (mode === "timeout") {
     console.error(secret);
     setInterval(() => {}, 1000);
-  } else if (mode === "exit") {
+  } else if (mode === "nonzero") {
     process.stdout.write("stdout-before-exit\\n");
     process.stderr.write("stderr-before-exit " + secret + "\\n", () => process.exit(7));
   } else if (mode === "orphan-parent") {
@@ -135,10 +135,10 @@ smokeIt("starts the readiness budget after synchronous OS process creation retur
 }, 60_000);
 
 smokeIt("retains readiness through an output flood and redacts secrets split across stderr chunks", async () => {
-  process.env.THEAIHATCH_SMOKE_TEST_UNLISTED = "unlisted-secret-value";
+  process.env.THEAIHATCH_SMOKE_TEST_UNLISTED = "hunter2";
   process.env.THEAIHATCH_SMOKE_TEST_MODE = "verbose";
   const result = await runPackageSmoke({ executable, dataDirectory: await temporaryDirectory(), timeoutMs: 5_000 });
-  expect(result.stderr).not.toContain("unlisted-secret-value");
+  expect(result.stderr).not.toContain("hunter2");
   expect(result.stderr).toContain("[REDACTED]");
   expect(result.stderr.length).toBeLessThanOrEqual(16_384);
 }, 60_000);
@@ -156,7 +156,7 @@ smokeIt("reports a bounded readiness timeout with redacted executable diagnostic
 
 smokeIt("captures both output streams on an immediate nonzero exit and redacts the error", async () => {
   process.env.THEAIHATCH_SMOKE_TEST_SECRET = "smoke-secret-value";
-  process.env.THEAIHATCH_SMOKE_TEST_MODE = "exit";
+  process.env.THEAIHATCH_SMOKE_TEST_MODE = "nonzero";
   const result = await runPackageSmoke({ executable, dataDirectory: await temporaryDirectory(), timeoutMs: 5_000 }).catch((error: Error) => error);
   expect((result as Error).message).toContain(executable);
   expect((result as Error).message).toMatch(/exit code 7/);

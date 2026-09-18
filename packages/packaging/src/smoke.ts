@@ -27,11 +27,16 @@ interface CapturedOutput {
   stdout: string;
   combinedTail: string;
   readinessTail: string;
-  descendantPids: Set<number>;
+  descendantProcesses: Map<number, WindowsProcessIdentity>;
   readinessUrl?: string;
   descendantQuery?: Promise<void>;
   forbiddenFallback: boolean;
   error?: Error;
+}
+
+interface WindowsProcessIdentity {
+  pid: number;
+  creationDate: string;
 }
 
 export async function runPackageSmoke(options: SmokeOptions): Promise<SmokeResult> {
@@ -47,7 +52,7 @@ export async function runPackageSmoke(options: SmokeOptions): Promise<SmokeResul
   await fs.mkdir(dataDirectory, { recursive: true });
   const workingDirectory = await fs.mkdtemp(path.join(dataDirectory, ".package-smoke-"));
   let child: ChildProcess | undefined;
-  let captured: CapturedOutput = { stderr: "", stdout: "", combinedTail: "", readinessTail: "", descendantPids: new Set(), forbiddenFallback: false };
+  let captured: CapturedOutput = { stderr: "", stdout: "", combinedTail: "", readinessTail: "", descendantProcesses: new Map(), forbiddenFallback: false };
   const sensitiveValues = sensitiveEnvironmentValues(process.env);
 
   try {
@@ -73,13 +78,11 @@ export async function runPackageSmoke(options: SmokeOptions): Promise<SmokeResul
     await delay(150);
     assertNoForbiddenFallback(captured, executable, sensitiveValues);
     await terminate(child, executable, captured);
-    return { healthStatus, rootStatus, stderr: sanitize(captured.stderr, sensitiveValues) };
+    return { healthStatus, rootStatus, stderr: sanitizeBounded(captured.stderr, sensitiveValues) };
   } catch (error) {
     if (child !== undefined) await terminate(child, executable, captured);
     const message = error instanceof Error ? error.message : String(error);
-    const marker = "__THEAIHATCH_SMOKE_EXECUTABLE__";
-    const safeMessage = sanitize(message.split(executable).join(marker), sensitiveValues).split(marker).join(executable);
-    throw new Error(safeMessage, { cause: error });
+    throw new Error(message, { cause: error });
   } finally {
     await fs.rm(workingDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
@@ -118,7 +121,7 @@ function isolatedEnvironment(home: string, workingDirectory: string): NodeJS.Pro
 }
 
 function captureOutput(child: ChildProcess): CapturedOutput {
-  const captured: CapturedOutput = { stderr: "", stdout: "", combinedTail: "", readinessTail: "", descendantPids: new Set(), forbiddenFallback: false };
+  const captured: CapturedOutput = { stderr: "", stdout: "", combinedTail: "", readinessTail: "", descendantProcesses: new Map(), forbiddenFallback: false };
   child.on("error", (error) => { captured.error = error; });
   if (process.platform === "win32") child.once("exit", () => { void trackDescendants(captured, child.pid); });
   const append = (stream: "stderr" | "stdout", chunk: Buffer | string): void => {
@@ -208,7 +211,7 @@ function exited(child: ChildProcess): string | undefined {
 }
 
 function smokeFailure(prefix: string, executable: string, captured: CapturedOutput, sensitiveValues: readonly string[], cause?: unknown): Error {
-  const diagnostics = sanitize([captured.stderr, captured.stdout].filter(Boolean).join("\n"), sensitiveValues);
+  const diagnostics = sanitizeBounded([captured.stderr, captured.stdout].filter(Boolean).join("\n"), sensitiveValues);
   const suffix = diagnostics.length === 0 ? "" : `\n${diagnostics}`;
   return new Error(`${prefix}: ${executable}${suffix}`, { cause });
 }
@@ -224,47 +227,87 @@ async function terminate(child: ChildProcess, executable: string, captured: Capt
     }
   }
   if (exited(child) !== undefined) {
-    await Promise.all([...captured.descendantPids].map(forceWindowsTree));
+    await Promise.all([...captured.descendantProcesses.values()].map(terminateWindowsProcessTree));
     return;
   }
+  const rootIdentity = process.platform === "win32" && child.pid !== undefined
+    ? await windowsProcessIdentity(child.pid)
+    : undefined;
   child.kill("SIGINT");
   const clean = await waitForExit(child, shutdownTimeoutMs);
   if (captured.descendantQuery !== undefined) await captured.descendantQuery;
   if (clean) {
-    await Promise.all([...captured.descendantPids].map(forceWindowsTree));
+    await Promise.all([...captured.descendantProcesses.values()].map(terminateWindowsProcessTree));
     return;
   }
 
-  if (process.platform === "win32" && child.pid !== undefined) {
-    await forceWindowsTree(child.pid);
-    await Promise.all([...captured.descendantPids].map(forceWindowsTree));
+  if (rootIdentity !== undefined) {
+    await terminateWindowsProcessTree(rootIdentity);
+    await Promise.all([...captured.descendantProcesses.values()].map(terminateWindowsProcessTree));
   } else {
     child.kill("SIGKILL");
   }
   await waitForExit(child, shutdownTimeoutMs);
 }
 
-async function forceWindowsTree(pid: number): Promise<void> {
-  try { await runFile("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true }); } catch { /* Process can exit while taskkill starts. */ }
+async function terminateWindowsProcessTree(identity: WindowsProcessIdentity): Promise<void> {
+  const script = [
+    "$targetPid = [int]$env:THEAIHATCH_SMOKE_TARGET_PID",
+    "$targetCreation = [string]$env:THEAIHATCH_SMOKE_TARGET_CREATION",
+    "$all = @(Get-CimInstance Win32_Process)",
+    "$target = @($all | Where-Object { [int]$_.ProcessId -eq $targetPid -and [string]$_.CreationDate -eq $targetCreation })",
+    "if ($target.Count -gt 0) { $pending = @($targetPid); $targets = @($target[0]); while ($pending.Count -gt 0) { $parentId = $pending[0]; if ($pending.Count -eq 1) { $pending = @() } else { $pending = @($pending[1..($pending.Count - 1)]) }; foreach ($item in @($all | Where-Object { [int]$_.ParentProcessId -eq $parentId })) { if (@($targets | Where-Object { [int]$_.ProcessId -eq [int]$item.ProcessId }).Count -eq 0) { $targets += $item; $pending += [int]$item.ProcessId } } }; $current = @(Get-CimInstance Win32_Process); foreach ($item in $targets) { $match = @($current | Where-Object { [int]$_.ProcessId -eq [int]$item.ProcessId -and [string]$_.CreationDate -eq [string]$item.CreationDate }); if ($match.Count -gt 0) { Invoke-CimMethod -InputObject $match[0] -MethodName Terminate | Out-Null } } }",
+  ].join("; ");
+  try {
+    await runFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      windowsHide: true,
+      timeout: shutdownTimeoutMs,
+      env: {
+        ...process.env,
+        THEAIHATCH_SMOKE_TARGET_PID: String(identity.pid),
+        THEAIHATCH_SMOKE_TARGET_CREATION: identity.creationDate,
+      },
+    });
+  } catch { /* Process can exit while identity validation or termination starts. */ }
 }
 
 async function trackDescendants(captured: CapturedOutput, rootPid: number | undefined): Promise<void> {
   if (process.platform !== "win32" || rootPid === undefined) return;
-  const query = windowsDescendantPids(rootPid).then((pids) => {
-    for (const pid of pids) captured.descendantPids.add(pid);
+  const query = windowsDescendantProcesses(rootPid).then((processes) => {
+    for (const process of processes) captured.descendantProcesses.set(process.pid, process);
   }, () => undefined);
   captured.descendantQuery = query;
   await query;
 }
 
-async function windowsDescendantPids(rootPid: number): Promise<number[]> {
+async function windowsProcessIdentity(pid: number): Promise<WindowsProcessIdentity | undefined> {
+  const script = [
+    "$targetProcessId = [int]$env:THEAIHATCH_SMOKE_ROOT_PID",
+    "$process = Get-CimInstance Win32_Process | Where-Object { [int]$_.ProcessId -eq $targetProcessId } | Select-Object -First 1",
+    "if ($null -ne $process) { [pscustomobject]@{ ProcessId = [int]$process.ProcessId; CreationDate = [string]$process.CreationDate } | ConvertTo-Json -Compress }",
+  ].join("; ");
+  try {
+    const { stdout } = await runFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      windowsHide: true,
+      timeout: 2_000,
+      env: { ...process.env, THEAIHATCH_SMOKE_ROOT_PID: String(pid) },
+    });
+    const parsed = JSON.parse(stdout.trim()) as { ProcessId?: number; CreationDate?: string };
+    if (parsed.ProcessId === undefined || parsed.CreationDate === undefined) return undefined;
+    return { pid: parsed.ProcessId, creationDate: parsed.CreationDate };
+  } catch {
+    return undefined;
+  }
+}
+
+async function windowsDescendantProcesses(rootPid: number): Promise<WindowsProcessIdentity[]> {
   const script = [
     "$root = [int]$env:THEAIHATCH_SMOKE_ROOT_PID",
-    "$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId)",
+    "$all = @(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate)",
     "$pending = @($root)",
     "$found = @()",
-    "while ($pending.Count -gt 0) { $parentId = $pending[0]; if ($pending.Count -eq 1) { $pending = @() } else { $pending = @($pending[1..($pending.Count - 1)]) }; foreach ($item in @($all | Where-Object { [int]$_.ParentProcessId -eq $parentId })) { $childPid = [int]$item.ProcessId; if ($found -notcontains $childPid) { $found += $childPid; $pending += $childPid } } }",
-    "$found",
+    "while ($pending.Count -gt 0) { $parentId = $pending[0]; if ($pending.Count -eq 1) { $pending = @() } else { $pending = @($pending[1..($pending.Count - 1)]) }; foreach ($item in @($all | Where-Object { [int]$_.ParentProcessId -eq $parentId })) { $childPid = [int]$item.ProcessId; if (@($found | Where-Object { [int]$_.ProcessId -eq $childPid }).Count -eq 0) { $found += $item; $pending += $childPid } } }",
+    "$found | ForEach-Object { [pscustomobject]@{ ProcessId = [int]$_.ProcessId; CreationDate = [string]$_.CreationDate } } | ConvertTo-Json -Compress",
   ].join("; ");
   try {
     const { stdout } = await runFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
@@ -272,7 +315,12 @@ async function windowsDescendantPids(rootPid: number): Promise<number[]> {
       timeout: 2_000,
       env: { ...process.env, THEAIHATCH_SMOKE_ROOT_PID: String(rootPid) },
     });
-    return stdout.split(/\s+/u).map(Number).filter((candidate) => Number.isSafeInteger(candidate) && candidate > 0);
+    if (stdout.trim() === "") return [];
+    const parsed = JSON.parse(stdout.trim()) as { ProcessId?: number; CreationDate?: string } | Array<{ ProcessId?: number; CreationDate?: string }>;
+    const entries = Array.isArray(parsed) ? parsed : [parsed];
+    return entries.filter((entry): entry is { ProcessId: number; CreationDate: string } =>
+      entry.ProcessId !== undefined && entry.CreationDate !== undefined,
+    ).map((entry) => ({ pid: entry.ProcessId, creationDate: entry.CreationDate }));
   } catch {
     return [];
   }
@@ -295,18 +343,17 @@ function appendBounded(existing: string, next: string, limit = stderrLimit): str
 
 function sensitiveEnvironmentValues(environment: NodeJS.ProcessEnv): string[] {
   return Object.entries(environment)
-    .filter(([key, value]) => {
-      if (value === undefined || value.length === 0) return false;
-      const secretKey = /(?:secret|token|password|authorization|cookie|api[_-]?key)/iu.test(key);
-      return secretKey || (value.length >= 12 && !/[\\/:]/u.test(value));
-    })
-    .map(([, value]) => value!)
-    .filter((value) => value.length > 0)
+    .map(([, value]) => value)
+    .filter((value): value is string => value !== undefined && value.length > 0)
     .sort((left, right) => right.length - left.length);
 }
 
 function sanitize(value: string, sensitiveValues: readonly string[]): string {
   return sensitiveValues.reduce((result, secret) => result.split(secret).join("[REDACTED]"), value);
+}
+
+function sanitizeBounded(value: string, sensitiveValues: readonly string[]): string {
+  return appendBounded("", sanitize(value, sensitiveValues));
 }
 
 function delay(milliseconds: number): Promise<void> {
