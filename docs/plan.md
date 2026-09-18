@@ -134,11 +134,11 @@
 **Requirements covered:** REQ-PKG-001, REQ-PKG-002, REQ-PKG-003, REQ-PKG-004, REQ-PKG-005, REQ-PKG-006, REQ-OSS-001, REQ-OSS-002, REQ-OSS-003, REQ-OSS-004, REQ-OSS-005, REQ-OSS-006, REQ-OSS-007, REQ-OSS-008
 
 ### Tasks
-- [ ] Embed server and web assets into the self-contained executable build → `packages/packaging/src/build.ts`
-- [ ] Implement platform config/data paths and resumable first-run initialization → `apps/server/src/bootstrap/first-run.ts`
-- [ ] Implement bounded loopback port fallback, readiness, and browser launch → `apps/server/src/bootstrap/listen.ts`
-- [ ] Implement rate-limited signed release metadata checks → `apps/server/src/updates/check.ts`
-- [ ] Add clean-machine package smoke tests for all release targets → `packages/packaging/test/smoke.test.ts`
+- [x] Embed server and web assets into the self-contained executable build → `packages/packaging/src/build.ts`
+- [x] Implement platform config/data paths and resumable first-run initialization → `apps/server/src/bootstrap/first-run.ts`
+- [x] Implement bounded loopback port fallback, readiness, and browser launch → `apps/server/src/bootstrap/listen.ts`
+- [x] Implement rate-limited signed release metadata checks → `apps/server/src/updates/check.ts`
+- [x] Add clean-machine package smoke tests for all release targets → `packages/packaging/test/smoke-runner.test.ts`
 - [ ] Add canonical Apache-2.0 license and package metadata → `LICENSE`
 - [ ] Write install, development, security, and usage documentation with animation GIF → `README.md`
 - [ ] Add contribution and conduct processes → `CONTRIBUTING.md`
@@ -148,6 +148,8 @@
 - [ ] Configure Windows, macOS, and Linux build/test/package matrix → `.github/workflows/ci.yml`
 - [ ] Configure semantic-release, signed tags, changelog, artifacts, and checksums → `.github/workflows/release.yml`
 - [ ] Configure CI secret scanning with synthetic detection fixture → `.github/workflows/secret-scan.yml`
+
+Release publication and automation remain Phase 6B. Native package smoke runs on each target's matching CI runner.
 
 **Exit criteria**
 - Each target artifact runs the Phase 1 fixture on a clean machine without Node installed.

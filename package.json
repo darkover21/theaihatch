@@ -19,7 +19,8 @@
     "test": "vitest run",
     "build": "npm run build --workspace @theaihatch/web",
     "package:plan": "vite-node --script packages/packaging/src/cli.ts plan",
-    "package:build": "vite-node --script packages/packaging/src/cli.ts build"
+    "package:build": "vite-node --script packages/packaging/src/cli.ts build",
+    "package:smoke": "vite-node --script packages/packaging/src/smoke.ts"
   },
   "dependencies": {},
   "devDependencies": {
