@@ -4,6 +4,52 @@
 
 Proposed design for the first sub-phase of Phase 6, approved in chat at the scope level. This sub-phase establishes the packaged runtime and its verification boundary. Release automation and open-source process files remain Phase 6B.
 
+### Task 6 feasibility gate: initial failure and recovery, 2026-09-18
+
+The first Windows x64 Node 22.23.2 prototype successfully prepared and injected
+a SEA with postject 1.0.0-alpha.6, then failed the native loading gate. After
+relocating only the executable and removing its build inputs, better-sqlite3's
+`bindings` wrapper requested `node_modules/better-sqlite3/build/better_sqlite3.node`.
+The embedded inventory contains the actual binary at
+`node_modules/better-sqlite3/build/Release/better_sqlite3.node`. The prototype's
+closed inventory loader threw a generic missing-asset error for the first probe;
+`bindings` expects `MODULE_NOT_FOUND` to continue to subsequent candidates.
+
+Full builder implementation was halted under Task 6's binding first-attempt gate.
+This is an identified prototype resolver incompatibility, not evidence that SEA
+cannot load native addons. That attempt produced no release artifact or manifest.
+
+Required design correction before resuming:
+
+- Explicit runtime inputs must include package metadata, JavaScript wrappers,
+  native binaries and the runtime dependency closure (`bindings` and
+  `file-uri-to-path` for the current SQLite wrapper), preserving relative paths.
+- An inventory-only loader must preserve CommonJS resolution error semantics for
+  absent probe candidates while forbidding all ambient repository resolution.
+  Only exhaustion of valid candidates should produce the final diagnostic naming
+  the native package and missing runtime input. No repository or adjacent-resource
+  fallback is permitted.
+- Test the resolver contract independently, then rerun the unchanged native
+  success requirement in an injected executable before implementing the full
+  server builder. Both packages must be attempted even if one fails.
+- Use the same Node 22 executable for preparation and injection, and native
+  binaries built for its ABI. The local default Node 24 binary's SQLite ABI 137
+  does not match Node 22's ABI 127.
+
+The authorized recovery implemented and tested this correction. The unchanged
+Windows x64 Node 22.23.2 SEA gate now passes: it relocates only the executable,
+deletes build inputs, clears PATH/NODE_PATH/NODE_OPTIONS, executes SQLite
+`SELECT 42`, and loads keytar. The original failed-attempt report is retained.
+
+The recovered builder additionally verifies the actual bundled server, native
+modules, storage initialization, loopback health and embedded UI before writing
+a final-byte manifest. Its verification mode uses temporary storage and an
+in-memory keychain to avoid touching user credentials; normal packaged startup
+retains the production keychain. Extracted runtime files are published atomically
+into the hash-addressed cache, checked for integrity, and symlinked cache
+directories are rejected. Concurrent fresh-cache launches are covered on this
+host. macOS/Linux native execution remains a native CI responsibility.
+
 ## Goal
 
 Produce a reproducible Node SEA-based application payload that embeds the built web UI and server launcher, starts the existing Fastify application on loopback, survives first-run interruption, and can verify signed release metadata without downloading or installing updates.

@@ -139,7 +139,7 @@ export async function writeSeaConfig(output: string, entrypoint: string, assets:
       main: path.resolve(entrypoint),
       output: path.resolve(`${output}.blob`),
       disableExperimentalSEAWarning: true,
-      assets: Object.fromEntries(Object.entries(assets).map(([key, value]) => [key, path.resolve(value)])),
+      assets: Object.fromEntries(Object.keys(assets).sort().map((key) => [key, path.resolve(assets[key]!)])),
     }, null, 2),
     "utf8",
   );

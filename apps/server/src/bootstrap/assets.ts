@@ -81,6 +81,18 @@ export function createEmbeddedAssetProvider(readAsset: (key: string) => Promise<
   };
 }
 
+export async function createPackagedAssetProvider(
+  readAsset?: (key: string) => ArrayBuffer | Buffer,
+): Promise<AssetProvider> {
+  const getAsset = readAsset ?? (await import("node:sea")).getAsset;
+  const index: unknown = JSON.parse(Buffer.from(getAsset("web-index") as ArrayBuffer).toString("utf8"));
+  if (!Array.isArray(index) || !index.every((key) => typeof key === "string" && key.startsWith("web/")) || !index.includes("web/index.html")) {
+    throw new Error("Invalid packaged web index: web/index.html is required");
+  }
+  const keys = new Set<string>(index);
+  return createEmbeddedAssetProvider(async (key) => keys.has(key) ? Buffer.from(getAsset(key) as ArrayBuffer) : null);
+}
+
 async function sendAsset(provider: AssetProvider, logicalPath: string, reply: FastifyReply): Promise<void> {
   const asset = await provider.read(logicalPath);
   if (asset === null) {
