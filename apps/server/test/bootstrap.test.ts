@@ -103,6 +103,7 @@ describe("bootstrap", () => {
 
   it("REQ-PKG-006: rate-limits update checks", () => {
     const checker = new UpdateChecker(100);
+    expect(checker.shouldCheck(0)).toBe(true);
     expect(checker.shouldCheck(1000)).toBe(true);
     checker.markChecked(1000);
     expect(checker.shouldCheck(1050)).toBe(false);
