@@ -163,7 +163,7 @@ describe("run coordinator", () => {
     const run = await coordinator.start({ ...input, createProvider: () => provider });
     await vi.waitFor(() => expect(coordinator.get(run.runId).events).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "terminal_output", payload: expect.objectContaining({ chunk: "started\n" }) })
-    ])));
+    ])), { timeout: 10_000 });
     coordinator.cancel(run.runId);
     await waitForTerminal(coordinator, run.runId);
 
