@@ -18,6 +18,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "build": "npm run build --workspace @theaihatch/web",
+    "mcp:token": "vite-node --config vite.server.config.ts --script apps/server/src/scripts/print-mcp-token.ts",
     "package:plan": "vite-node --script packages/packaging/src/cli.ts plan",
     "package:build": "vite-node --script packages/packaging/src/cli.ts build",
     "package:smoke": "vite-node --script packages/packaging/src/smoke.ts"

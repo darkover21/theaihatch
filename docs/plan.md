@@ -94,7 +94,7 @@
 - [ ] Implement loopback streamable HTTP MCP endpoint and bearer authentication → `packages/mcp-server/src/server.ts`
 - [ ] Implement the mutation control lease and five platform tool schemas → `packages/mcp-server/src/tools.ts`
 - [ ] Route inbound calls through platform services and SES recording → `apps/server/src/mcp/inbound-controller.ts`
-- [ ] Add two-server failure-isolation and external-driver end-to-end tests → `apps/server/test/mcp.e2e.test.ts`
+- [x] Add two-server failure-isolation and external-driver end-to-end tests → `apps/server/test/mcp.e2e.test.ts`
 
 **Exit criteria**
 - The same agent contract test passes for all four adapter types.

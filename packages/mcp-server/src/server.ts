@@ -10,8 +10,16 @@ export class ControlLease implements MutationLease {
 }
 export interface McpServerConfig { token?: string; handlers: PlatformToolHandlers; lease?: MutationLease; }
 export const jsonRpcRequest = z.object({ jsonrpc: z.literal("2.0"), id: z.union([z.string(), z.number()]), method: z.string(), params: z.record(z.unknown()).optional() });
+export const jsonRpcNotification = z.object({ jsonrpc: z.literal("2.0"), id: z.undefined().optional(), method: z.string(), params: z.record(z.unknown()).optional() });
 export type JsonRpcRequest = z.infer<typeof jsonRpcRequest>;
-export type JsonRpcResponse = { jsonrpc: "2.0"; id: string | number; result?: unknown; error?: { code: number; message: string; data?: unknown } };
+export type JsonRpcResponse = { jsonrpc: "2.0"; id: string | number | null; result?: unknown; error?: { code: number; message: string; data?: unknown } };
+/** A well-formed notification carries no id, so JSON-RPC forbids answering it with a response body. */
+export type AcceptedNotification = { accepted: true };
+export type McpOutcome = JsonRpcResponse | AcceptedNotification;
+
+export const invalidTokenCode = -32001;
+export function isAcceptedNotification(outcome: McpOutcome): outcome is AcceptedNotification { return "accepted" in outcome; }
+export function isUnauthorized(outcome: McpOutcome): boolean { return !isAcceptedNotification(outcome) && outcome.error?.code === invalidTokenCode; }
 
 export function createMcpToken(): string { return randomBytes(32).toString("hex"); }
 
@@ -20,12 +28,17 @@ export class McpController {
   private readonly lease: MutationLease;
   constructor(private readonly config: McpServerConfig) { this.token = config.token ?? createMcpToken(); this.lease = config.lease ?? new ControlLease(); }
   getToken(): string { return this.token; }
-  async handle(requestValue: unknown, authorization: string | undefined, clientId: string): Promise<JsonRpcResponse> {
+  private authorized(authorization: string | undefined): boolean { return authorization === `Bearer ${this.token}`; }
+  private invalidToken(id: string | number | null): JsonRpcResponse { return { jsonrpc: "2.0", id, error: { code: invalidTokenCode, message: "invalid MCP token" } }; }
+  async handle(requestValue: unknown, authorization: string | undefined, clientId: string): Promise<McpOutcome> {
     const request = jsonRpcRequest.safeParse(requestValue);
-    if (!request.success) return { jsonrpc: "2.0", id: 0, error: { code: -32600, message: "invalid request" } };
-    if (authorization !== `Bearer ${this.token}`) return { jsonrpc: "2.0", id: request.data.id, error: { code: -32001, message: "invalid MCP token" } };
+    if (!request.success) {
+      const notification = jsonRpcNotification.safeParse(requestValue);
+      if (!notification.success) return { jsonrpc: "2.0", id: null, error: { code: -32600, message: "invalid request" } };
+      return this.authorized(authorization) ? { accepted: true } : this.invalidToken(null);
+    }
+    if (!this.authorized(authorization)) return this.invalidToken(request.data.id);
     if (request.data.method === "initialize") return { jsonrpc: "2.0", id: request.data.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "theaihatch", version: "0.1.0" } } };
-    if (request.data.method === "notifications/initialized") return { jsonrpc: "2.0", id: request.data.id, result: {} };
     if (request.data.method === "tools/list") return { jsonrpc: "2.0", id: request.data.id, result: { tools: publicToolSchemas() } };
     if (request.data.method !== "tools/call") return { jsonrpc: "2.0", id: request.data.id, error: { code: -32601, message: "method not found" } };
     const params = request.data.params ?? {};

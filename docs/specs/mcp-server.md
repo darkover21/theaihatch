@@ -11,6 +11,8 @@ The platform shall expose MCP over streamable HTTP bound only to loopback interf
 **Acceptance**
 - Given the platform is running, when a loopback client connects to the MCP endpoint, then protocol initialization succeeds.
 - Given a non-loopback interface, when connection is attempted, then no listener accepts it.
+- Given an id-less notification, when it is posted, then it is accepted with no response body and the session continues.
+- Given the endpoint offers no server-initiated stream, when a client opens or terminates one, then it is declined without failing the session.
 
 ### REQ-MPS-002 — Authenticate MCP clients
 Each first run shall generate a random bearer token stored in the OS keychain; every MCP request after discovery of the endpoint shall require it.
@@ -18,6 +20,7 @@ Each first run shall generate a random bearer token stored in the OS keychain; e
 **Acceptance**
 - Given a missing or invalid token, when an MCP request is sent, then it receives an authentication error and no tool runs.
 - Given a valid keychain token, when a request is sent from loopback, then it proceeds to tool validation.
+- Given the stored token, when a local operator runs the token handoff command, then the value is printed for client configuration.
 
 ### REQ-MPS-003 — Publish platform tools
 The server shall publish tools for open file, edit, save, run command, and animate step with complete input schemas.

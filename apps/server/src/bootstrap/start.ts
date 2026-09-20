@@ -28,14 +28,22 @@ export interface StartedServer {
   close(): Promise<void>;
 }
 
+/** An explicit token keeps a development or test client reproducible and never touches the keychain. */
+async function resolveMcpToken(keychain: Keychain): Promise<string> {
+  const override = process.env.THEAIHATCH_MCP_TOKEN;
+  if (override !== undefined && override !== "") return override;
+  const stored = await keychain.get("mcp:bearer");
+  if (stored !== null) return stored;
+  const generated = createMcpToken();
+  await keychain.set("mcp:bearer", generated);
+  return generated;
+}
+
 export async function startServer(options: StartServerOptions = {}): Promise<StartedServer> {
   if (options.dataDirectory === undefined) await initializeFirstRun();
   else await initializeFirstRun({ dataDirectory: options.dataDirectory });
 
-  const keychain = options.keychain ?? new KeytarKeychain();
-  const storedMcpToken = await keychain.get("mcp:bearer");
-  const mcpToken = storedMcpToken ?? createMcpToken();
-  if (storedMcpToken === null) await keychain.set("mcp:bearer", mcpToken);
+  const mcpToken = await resolveMcpToken(options.keychain ?? new KeytarKeychain());
 
   const createApp = options.createApp ?? ((token, assetProvider) => createServer(undefined, token, assetProvider));
   const app = createApp(mcpToken, options.assetProvider);

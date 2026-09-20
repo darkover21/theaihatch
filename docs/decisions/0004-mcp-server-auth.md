@@ -7,5 +7,5 @@ Inbound MCP control can edit files and run commands. Loopback binding blocks rem
 Bind streamable HTTP only to IPv4 and IPv6 loopback and require a random bearer token generated on first run and stored in the OS keychain. Non-local access is unsupported in v1.
 
 ## Consequences
-External agents need a local token handoff. There is no certificate or remote identity setup, and a caller without both loopback access and the token cannot invoke tools.
+External agents need a local token handoff, which `npm run mcp:token` performs by printing the stored token for a loopback client to use; `THEAIHATCH_MCP_TOKEN` pins a token for development without touching the keychain. There is no certificate or remote identity setup, and a caller without both loopback access and the token cannot invoke tools.
 
