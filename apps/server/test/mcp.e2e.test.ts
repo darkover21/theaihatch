@@ -78,6 +78,13 @@ describe("inbound MCP over streamable HTTP", () => {
     expect(await fs.readFile(path.join(workspaceRoot, "notes.txt"), "utf8")).toBe("after\n");
   });
 
+  it("records a human PUT /file as a replayable edit", async () => {
+    const before = events.length;
+    const response = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/file`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: "notes.txt", content: "human save\n" }) });
+    expect(response.status).toBe(200);
+    expect(events.slice(before).map((event) => event.type)).toEqual(expect.arrayContaining(["file_open", "edit_replace", "file_save"]));
+  });
+
   it("REQ-MPS-006: runs an approved command and holds a destructive one for local approval", async () => {
     const before = events.length;
     await client.callTool("run_command", { command: "echo mcp-e2e" });

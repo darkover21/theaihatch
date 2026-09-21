@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -169,8 +169,11 @@ export function registerWorkspaceRoutes(app: FastifyInstance, registry = new Wor
       const body = fileWriteBody.parse(request.body);
       const record = registry.get(params.id);
       const normalized = record.tree.normalize(body.path);
+      let before = "";
+      let created = false;
+      try { before = await record.tree.readFile(normalized); } catch { created = true; }
       await record.tree.writeFile(normalized, body.content);
-      await registry.emit({ type: "file_save", payload: { path: normalized, contentHash: createHash("sha256").update(body.content).digest("hex") } });
+      await recordCommittedEdit(record.stream, { path: normalized, before, after: body.content, created });
       return fileResponse.parse({ path: normalized, content: body.content });
     } catch (error) {
       return sendError(reply, 400, error);
