@@ -14,6 +14,7 @@ export class WorkspaceStream implements SesAppender {
 
   get currentFiles(): ReadonlyMap<string, string | null> { return this.writer.currentFiles; }
   get headSeq(): number { return this.writer.headSeq; }
+  get hasOpenStep(): boolean { return this.openStepId !== null; }
 
   async append(input: SesEventInput): Promise<AnySesEvent[]> {
     if (input.type === "step_begin") {

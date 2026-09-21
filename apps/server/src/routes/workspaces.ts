@@ -33,6 +33,7 @@ export interface WorkspaceRecord {
   readonly changes: WorkspaceChange[];
   readonly changeLog: ChangeLog<WorkspaceChange>;
   readonly stream: WorkspaceStream;
+  externalQueue: Promise<void>;
   demoEvents: AnySesEvent[] | null;
   gitStatus: GitStatusSnapshot;
 }
@@ -54,13 +55,15 @@ export class WorkspaceRegistry {
     const id = randomUUID();
     const stream = await WorkspaceStream.open(this.dataDirectory, id);
     stream.subscribe(0, (event) => this.eventSink(event));
-    const record: WorkspaceRecord = { id, tree, watcher, stream, changes: [], changeLog: new ChangeLog(), demoEvents: null, gitStatus: await readGitStatus(tree.root) };
+    const record: WorkspaceRecord = { id, tree, watcher, stream, externalQueue: Promise.resolve(), changes: [], changeLog: new ChangeLog(), demoEvents: null, gitStatus: await readGitStatus(tree.root) };
     watcher.subscribe((change) => {
       record.changes.push(change);
       if (record.changes.length > 100) record.changes.shift();
       record.changeLog.append(change);
       if (change.path === ".gitignore") void record.tree.reloadIgnoreRules();
-      if (process.env.THEAIHATCH_WATCH_PRODUCER === "1") void recordExternalChange(record, change);
+      // One write can surface as several raw watcher events. Serializing keeps plan-then-emit atomic, so a
+      // later event always sees the content the earlier one recorded and suppresses itself as an echo.
+      if (process.env.THEAIHATCH_WATCH_PRODUCER === "1") record.externalQueue = record.externalQueue.then(() => recordExternalChange(record, change)).catch(() => undefined);
     });
     await watcher.start();
     this.records.set(record.id, record);
@@ -83,6 +86,7 @@ export class WorkspaceRegistry {
   async close(id: string): Promise<void> {
     const record = this.get(id);
     await record.watcher.stop();
+    await record.externalQueue;
     await record.stream.close();
     this.records.delete(id);
   }
@@ -94,24 +98,35 @@ export class WorkspaceRegistry {
   }
 }
 
+type ExternalEdit = { kind: "delete" } | { kind: "edit"; before: string; after: string; created: boolean };
+
+// A watcher event that only echoes a write this stream already recorded must produce no events at all,
+// not an empty step: the projection is the record of what we wrote, so an unchanged hash means our own echo.
+async function planExternalChange(record: WorkspaceRecord, change: WorkspaceChange): Promise<ExternalEdit | null> {
+  if (change.kind === "delete") {
+    const current = record.stream.currentFiles.get(change.path);
+    return current === undefined || current === null ? null : { kind: "delete" };
+  }
+  const bytes = await fs.readFile(record.tree.absolute(change.path)).catch(() => null);
+  if (bytes === null || bytes.length > 1_000_000 || bytes.includes(0)) return null;
+  const after = bytes.toString("utf8");
+  if (after.includes("\uFFFD")) return null;
+  const before = record.stream.currentFiles.get(change.path);
+  if (before !== null && before !== undefined && hashContent(before) === hashContent(after)) return null;
+  return { kind: "edit", before: before ?? "", after, created: before === undefined };
+}
+
 async function recordExternalChange(record: WorkspaceRecord, change: WorkspaceChange): Promise<void> {
+  const planned = await planExternalChange(record, change).catch(() => null);
+  if (planned === null) return;
+  // A tool call writes to disk before it appends file_save, so the watcher can fire mid-step. Opening an
+  // external step there would close the tool's step early; the next watcher event still carries the change.
+  if (record.stream.hasOpenStep) return;
   const stepId = `external-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   try {
     await record.stream.append({ type: "step_begin", payload: { stepId, label: "External change", primaryPath: change.path } });
-    if (change.kind === "delete") {
-      if (record.stream.currentFiles.has(change.path) && record.stream.currentFiles.get(change.path) !== null) await record.stream.append({ type: "file_delete", payload: { path: change.path } });
-    } else {
-      const bytes = await fs.readFile(record.tree.absolute(change.path));
-      if (bytes.length <= 1_000_000 && !bytes.includes(0)) {
-        const content = bytes.toString("utf8");
-        if (!content.includes("\uFFFD")) {
-          const before = record.stream.currentFiles.get(change.path);
-          if (before === null || before === undefined || hashContent(before) !== hashContent(content)) {
-            await recordCommittedEdit(record.stream, { path: change.path, before: before ?? "", after: content, created: before === undefined });
-          }
-        }
-      }
-    }
+    if (planned.kind === "delete") await record.stream.append({ type: "file_delete", payload: { path: change.path } });
+    else await recordCommittedEdit(record.stream, { path: change.path, before: planned.before, after: planned.after, created: planned.created });
     await record.stream.append({ type: "step_end", payload: { stepId, outcome: "succeeded" } });
   } catch {
     try { await record.stream.append({ type: "step_end", payload: { stepId, outcome: "failed" } }); } catch { /* stream is closing */ }
