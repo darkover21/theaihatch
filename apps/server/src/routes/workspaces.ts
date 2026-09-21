@@ -59,6 +59,7 @@ export class WorkspaceRegistry {
       record.changes.push(change);
       if (record.changes.length > 100) record.changes.shift();
       record.changeLog.append(change);
+      if (change.path === ".gitignore") void record.tree.reloadIgnoreRules();
       if (process.env.THEAIHATCH_WATCH_PRODUCER === "1") void recordExternalChange(record, change);
     });
     await watcher.start();

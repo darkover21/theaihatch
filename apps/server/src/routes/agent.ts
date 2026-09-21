@@ -9,6 +9,7 @@ import type { WorkspaceRegistry } from "./workspaces.js";
 const runBody = z.object({ workspaceId: z.string().uuid(), prompt: z.string().min(1), provider: z.enum(["openai", "anthropic", "gemini", "openai-compatible"]), model: z.string().min(1), baseURL: z.string().url().optional() }).strict();
 const asyncRunBody = runBody.extend({ reviewMode: z.boolean().default(false), dryRun: z.boolean().default(false) }).strict();
 const runParams = z.object({ runId: z.string().uuid() }).strict();
+const runQuery = z.object({ fromSeq: z.coerce.number().int().nonnegative().optional(), includeEvents: z.coerce.boolean().optional() }).strict();
 const reviewBody = z.object({ decisions: z.array(z.object({ hunkId: z.string().min(1), decision: z.enum(["accepted", "rejected"]), actor: z.string().min(1).default("user"), feedback: z.string().optional() }).strict()).min(1) }).strict();
 const commandApprovalBody = z.object({ approved: z.boolean(), command: z.string().min(1), cwd: z.string().min(1) }).strict();
 const secretBody = z.object({ secret: z.string().min(1) }).strict();
@@ -78,6 +79,7 @@ export function registerAgentRoutes(app: FastifyInstance, registry: WorkspaceReg
         model: body.model,
         reviewMode: body.reviewMode,
         dryRun: body.dryRun,
+        writer: record.stream,
         createProvider: async () => {
           const secret = (await keychain.get(`provider:${body.provider}`)) ?? undefined;
           return adapter(body.provider, secret, body.model, body.baseURL);
@@ -89,10 +91,11 @@ export function registerAgentRoutes(app: FastifyInstance, registry: WorkspaceReg
     }
   });
 
-  app.get<{ Params: { runId: string } }>("/api/agent/runs/:runId", async (request, reply) => {
+  app.get<{ Params: { runId: string }; Querystring: { fromSeq?: string; includeEvents?: string } }>("/api/agent/runs/:runId", async (request, reply) => {
     try {
       const params = runParams.parse(request.params);
-      return coordinator.get(params.runId);
+      const query = runQuery.parse(request.query);
+      return coordinator.get(params.runId, { ...(query.fromSeq === undefined ? {} : { fromSeq: query.fromSeq }), ...(query.includeEvents === undefined ? {} : { includeEvents: query.includeEvents }) });
     } catch (error) {
       return sendAgentError(reply, agentErrorStatus(error, 404), error);
     }
@@ -139,6 +142,7 @@ export function registerAgentRoutes(app: FastifyInstance, registry: WorkspaceReg
         model: body.model,
         reviewMode: false,
         dryRun: false,
+        writer: record.stream,
         createProvider: async () => {
           const secret = (await keychain.get(`provider:${body.provider}`)) ?? undefined;
           return adapter(body.provider, secret, body.model, body.baseURL);

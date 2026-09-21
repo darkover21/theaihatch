@@ -1,11 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { AgentRuntime, ReviewGate, type AgentRunResult, type AgentToolResult } from "@theaihatch/agent";
 import type { ProviderAdapter, ProviderUsage } from "@theaihatch/providers";
 import { DryRunRecorder, GitCheckpointStore, type GitCheckpoint, type ProposedAction } from "@theaihatch/safety";
 import { ConversationRepository, ReviewRepository, SafetyAuditRepository, type StoredReviewDecisionInput } from "@theaihatch/storage";
-import type { AnySesEvent, SesEventInput } from "@theaihatch/ses";
+import type { AnySesEvent, SesAppender, SesEventInput } from "@theaihatch/ses";
 import { WorkspaceTree } from "@theaihatch/workspace";
 import { userPaths } from "@theaihatch/packaging";
 import { SesWriter } from "../ses.js";
@@ -26,6 +26,8 @@ export interface RunStatusView {
   error: string | null;
 }
 
+export interface RunStatusOptions { fromSeq?: number; includeEvents?: boolean; }
+
 export interface StartRunInput {
   tree: WorkspaceTree;
   prompt: string;
@@ -33,6 +35,7 @@ export interface StartRunInput {
   reviewMode: boolean;
   dryRun: boolean;
   createProvider: () => ProviderAdapter | Promise<ProviderAdapter>;
+  writer?: SesAppender;
 }
 
 export interface RunCoordinatorOptions {
@@ -51,7 +54,8 @@ interface RunRecord {
   usage: ProviderUsage;
   error: string | null;
   abortController: AbortController;
-  writer: SesWriter;
+  writer: SesAppender;
+  ownedWriter: SesWriter | null;
   conversations: ConversationRepository;
   reviews: ReviewRepository;
   audits: SafetyAuditRepository;
@@ -78,13 +82,18 @@ export class RunCoordinator {
     const provider = await input.createProvider();
     const runId = randomUUID();
     const conversationId = randomUUID();
-    let writer: SesWriter | undefined;
+    let writer: SesAppender | undefined;
+    let ownedWriter: SesWriter | undefined;
     let conversations: ConversationRepository | undefined;
     let reviews: ReviewRepository | undefined;
     let audits: SafetyAuditRepository | undefined;
     try {
       await fs.mkdir(this.dataDirectory, { recursive: true });
-      writer = await SesWriter.open(path.join(this.dataDirectory, "agent-runs", runId));
+      if (input.writer !== undefined) writer = input.writer;
+      else {
+        ownedWriter = await SesWriter.open(path.join(this.dataDirectory, "agent-runs", runId));
+        writer = ownedWriter;
+      }
       conversations = new ConversationRepository(path.join(this.dataDirectory, "conversations.sqlite"));
       reviews = new ReviewRepository(this.dataDirectory);
       audits = new SafetyAuditRepository(this.dataDirectory);
@@ -100,6 +109,7 @@ export class RunCoordinator {
         error: null,
         abortController: new AbortController(),
         writer,
+        ownedWriter: ownedWriter ?? null,
         conversations,
         reviews,
         audits,
@@ -115,7 +125,7 @@ export class RunCoordinator {
       void record.execution;
       return { runId, checkpointId: checkpoint.id };
     } catch (error) {
-      await closeWriter(writer);
+      await closeWriter(ownedWriter);
       closeRepository(audits);
       closeRepository(reviews);
       closeRepository(conversations);
@@ -123,15 +133,16 @@ export class RunCoordinator {
     }
   }
 
-  get(runId: string): RunStatusView {
+  get(runId: string, options: RunStatusOptions = {}): RunStatusView {
     const record = this.require(runId);
     const pending = record.approvals.pending(runId);
     const status = record.status === "running" && pending !== null ? pending.kind === "review" ? "waiting_for_review" : "waiting_for_command" : record.status;
+    const events = options.includeEvents === false ? [] : record.events.filter((event) => options.fromSeq === undefined || event.seq >= options.fromSeq);
     return structuredClone({
       runId: record.runId,
       checkpointId: record.checkpoint.id,
       status,
-      events: record.events,
+      events,
       pending,
       proposals: record.proposals.actions,
       usage: record.usage,
@@ -237,8 +248,11 @@ export class RunCoordinator {
     } catch (error) {
       failFinalization(error);
     }
-    try { await record.writer.appendCheckpoint("final"); } catch (error) { failFinalization(error); }
-    try { await record.writer.close(); } catch (error) { failFinalization(error); }
+    try {
+      if (record.ownedWriter !== null) await record.ownedWriter.appendCheckpoint("final");
+      else await appendFinalCheckpoint(record.writer);
+    } catch (error) { failFinalization(error); }
+    try { await record.ownedWriter?.close(); } catch (error) { failFinalization(error); }
     try { record.reviews.close(); } catch (error) { failFinalization(error); }
     try { record.audits.close(); } catch (error) { failFinalization(error); }
     try { record.conversations.updateRun(record.runId, outcome, new Date().toISOString(), record.error); } catch (error) { failFinalization(error); }
@@ -256,6 +270,11 @@ export class RunCoordinator {
 async function closeWriter(writer: SesWriter | undefined): Promise<void> {
   if (writer === undefined) return;
   try { await writer.close(); } catch { /* preserve the startup failure */ }
+}
+
+async function appendFinalCheckpoint(writer: SesAppender): Promise<void> {
+  const files = [...writer.currentFiles].map(([path, content]) => ({ path, content, contentHash: content === null ? null : createHash("sha256").update(content).digest("hex") }));
+  await writer.append({ type: "checkpoint", payload: { reason: "final", files } });
 }
 
 function closeRepository(repository: { close(): void } | undefined): void {

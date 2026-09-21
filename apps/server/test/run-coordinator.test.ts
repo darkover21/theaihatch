@@ -8,6 +8,7 @@ import { ConversationRepository } from "@theaihatch/storage";
 import { SesWriter } from "@theaihatch/ses";
 import { WorkspaceTree } from "@theaihatch/workspace";
 import { RunCoordinator, type StartRunInput } from "../src/agent/run-coordinator.js";
+import { WorkspaceStream } from "../src/workspace/workspace-stream.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -89,6 +90,16 @@ describe("run coordinator", () => {
 
     expect(checkpointStore.calls).toEqual([expect.objectContaining({ label: "theaihatch agent run checkpoint" })]);
     expect(provider.calls).toBeGreaterThan(0);
+  });
+
+  it("appends agent provenance to the supplied workspace stream without opening a second writer", async () => {
+    const { coordinator, input, dataDirectory } = await fixture();
+    const stream = await WorkspaceStream.open(dataDirectory, "workspace-stream");
+    const run = await coordinator.start({ ...input, writer: stream });
+    await waitForTerminal(coordinator, run.runId);
+    expect(stream.headSeq).toBeGreaterThanOrEqual(0);
+    await expect(fs.access(path.join(dataDirectory, "agent-runs"))).rejects.toThrow();
+    await stream.close();
   });
 
   it("REQ-SAF-002: rejects a checkpoint failure before constructing a provider", async () => {

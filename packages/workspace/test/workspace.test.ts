@@ -74,6 +74,24 @@ describe("workspace", () => {
     unsubscribe();
     await watcher.stop();
   });
+
+  it("REQ-WKS-005: does not infer a rename from unrelated delete and create events", async () => {
+    const root = await fixture();
+    const tree = await WorkspaceTree.open(root);
+    const watcher = new WorkspaceWatcher(tree);
+    const changes: Array<{ kind: string; path: string; previousPath?: string }> = [];
+    watcher.subscribe((change) => changes.push(change));
+    await watcher.start();
+    await fs.writeFile(path.join(root, "old.txt"), "old\n", "utf8");
+    await waitFor(() => changes.some((change) => change.kind === "create" && change.path === "old.txt"));
+    changes.splice(0);
+    await fs.unlink(path.join(root, "old.txt"));
+    await fs.writeFile(path.join(root, "new.txt"), "new\n", "utf8");
+    await waitFor(() => changes.some((change) => change.kind === "delete" && change.path === "old.txt"));
+    await waitFor(() => changes.some((change) => change.kind === "create" && change.path === "new.txt"));
+    expect(changes.some((change) => change.kind === "rename")).toBe(false);
+    await watcher.stop();
+  });
 });
 
 async function waitFor(predicate: () => boolean): Promise<void> {

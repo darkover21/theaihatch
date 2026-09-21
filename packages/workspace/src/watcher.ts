@@ -82,6 +82,7 @@ export class WorkspaceWatcher {
   private async classify(relative: string, absolute: string): Promise<void> {
     if (!this.running || this.tree.isIgnored(relative, false)) return;
     const current = await fs.lstat(absolute, { bigint: true }).then((stats) => identityFrom(stats as unknown as Stats), () => null);
+    if (!this.running) return;
     const previous = this.snapshots.get(relative);
     if (current === null) {
       if (previous === undefined) return;
