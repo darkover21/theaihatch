@@ -140,7 +140,9 @@ export function registerWorkspaceRoutes(app: FastifyInstance, registry = new Wor
     try {
       const params = workspaceParams.parse(request.params);
       const query = treeQuery.parse(request.query);
-      const entries = await registry.get(params.id).tree.list(query.path ?? ".");
+      const record = registry.get(params.id);
+      await record.watcher.ensureWatched(query.path ?? ".");
+      const entries = await record.tree.list(query.path ?? ".");
       return treeResponse.parse({ entries });
     } catch (error) {
       return sendError(reply, 404, error);
@@ -153,6 +155,7 @@ export function registerWorkspaceRoutes(app: FastifyInstance, registry = new Wor
       const query = fileQuery.parse(request.query);
       const record = registry.get(params.id);
       const normalized = record.tree.normalize(query.path);
+      await record.watcher.ensureWatched(path.posix.dirname(normalized));
       const content = await record.tree.readFile(normalized);
       return fileResponse.parse({ path: normalized, content });
     } catch (error) {

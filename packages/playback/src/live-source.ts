@@ -11,6 +11,13 @@ export class LiveEventSource implements EventSource {
 
   getHeadSeq(): number { return this.events.at(-1)?.seq ?? -1; }
 
+  reset(): void {
+    this.events.length = 0;
+    this.checkpoints.length = 0;
+    this.occurrences.clear();
+    for (const listener of this.listeners) listener();
+  }
+
   append(event: AnySesEvent): void {
     const next = validateSesEvent(event);
     if (next.seq !== this.getHeadSeq() + 1) throw new Error("live event sequence is not contiguous");

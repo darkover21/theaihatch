@@ -1,6 +1,7 @@
-import { promises as fs, watch, type FSWatcher, type Stats } from "node:fs";
+import { promises as fs, type FSWatcher, type Stats } from "node:fs";
 import path from "node:path";
 import { WorkspaceTree } from "./tree.js";
+import { nodeWatchBackend, type WatchBackend } from "./watch-backend.js";
 
 export type WorkspaceChangeKind = "create" | "modify" | "delete" | "rename";
 export interface WorkspaceChange { kind: WorkspaceChangeKind; path: string; previousPath?: string; }
@@ -34,15 +35,24 @@ export class WorkspaceWatcher {
   private readonly snapshots = new Map<string, FileIdentity>();
   private readonly heldDeletes = new Map<string, HeldDelete>();
   private readonly handles = new Set<FSWatcher>();
+  private readonly watchedDirectories = new Set<string>();
   private running = false;
   private flushing: Promise<void> = Promise.resolve();
 
-  constructor(private readonly tree: WorkspaceTree) {}
+  constructor(private readonly tree: WorkspaceTree, private readonly backend: WatchBackend = nodeWatchBackend) {}
 
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
-    this.openWatcher(this.tree.root.canonicalPath, process.platform === "darwin" || process.platform === "win32");
+    await this.ensureWatched(".");
+  }
+
+  async ensureWatched(relativeDirectory: string): Promise<void> {
+    if (!this.running) return;
+    const directory = this.tree.absolute(relativeDirectory);
+    if ((process.platform === "darwin" || process.platform === "win32") && this.watchedDirectories.has(this.tree.root.canonicalPath)) return;
+    if (this.watchedDirectories.has(directory)) return;
+    this.openWatcher(directory, process.platform === "darwin" || process.platform === "win32");
   }
 
   async stop(): Promise<void> {
@@ -51,6 +61,7 @@ export class WorkspaceWatcher {
     this.heldDeletes.clear();
     for (const handle of this.handles) handle.close();
     this.handles.clear();
+    this.watchedDirectories.clear();
     await this.flushing;
   }
 
@@ -60,12 +71,12 @@ export class WorkspaceWatcher {
   }
 
   private openWatcher(directory: string, recursive: boolean): void {
+    if (this.watchedDirectories.has(directory)) return;
     try {
-      const handle = watch(directory, { persistent: false, recursive }, (_eventType, filename) => {
-        if (filename !== null) this.onRaw(directory, filename.toString());
-      });
-      handle.on("error", () => { handle.close(); this.handles.delete(handle); });
+      const handle = this.backend.open(directory, recursive, (filename) => { if (filename !== null) this.onRaw(directory, filename); });
+      handle.on("error", () => { handle.close(); this.handles.delete(handle); this.watchedDirectories.delete(directory); });
       this.handles.add(handle);
+      this.watchedDirectories.add(directory);
     } catch {
       // The directory can disappear between workspace open and watcher setup.
     }

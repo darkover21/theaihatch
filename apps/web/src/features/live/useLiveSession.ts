@@ -4,10 +4,11 @@ import type { AnySesEvent } from "@theaihatch/ses/browser";
 import { validateSesEvent } from "@theaihatch/ses/browser";
 
 export function useLiveSession(workspaceId: string | null, fixture: readonly AnySesEvent[]): { engine: PlaybackEngine; snapshot: PlaybackSnapshot } {
-  const engine = useMemo(() => {
+  const session = useMemo(() => {
     const source = workspaceId === null ? new MemoryEventSource(fixture) : new LiveEventSource();
-    return new PlaybackEngine(source);
+    return { source, engine: new PlaybackEngine(source) };
   }, [fixture, workspaceId]);
+  const { source, engine } = session;
   const [snapshot, setSnapshot] = useState<PlaybackSnapshot>(() => engine.getSnapshot());
   useEffect(() => {
     let stopped = false;
@@ -17,8 +18,9 @@ export function useLiveSession(workspaceId: string | null, fixture: readonly Any
       const events = new EventSource(`/api/workspaces/${workspaceId}/events`);
       events.addEventListener("ses", (message) => {
         if (stopped) return;
-        try { engine.append(validateSesEvent(JSON.parse((message as MessageEvent).data) as unknown)); } catch { void engine.load(); }
+        try { engine.append(validateSesEvent(JSON.parse((message as MessageEvent).data) as unknown)); } catch { if (source instanceof LiveEventSource) source.reset(); void engine.load(); }
       });
+      events.addEventListener("overflow", () => { if (source instanceof LiveEventSource) source.reset(); void engine.load(); });
       return () => { stopped = true; events.close(); engine.dispose(); unsubscribe(); };
     }
     return () => { stopped = true; engine.dispose(); unsubscribe(); };

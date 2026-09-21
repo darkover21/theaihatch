@@ -162,6 +162,8 @@ export default function App() {
   const [selectedProviderId, setSelectedProviderId] = useState("openai");
   const agentAbort = useRef<AbortController | null>(null);
   const agentRunId = useRef<string | null>(null);
+  const workspaceTabsRef = useRef<EditorTab[]>([]);
+  const changeCursor = useRef(0);
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
   const decorationIds = useRef<string[]>([]);
@@ -199,15 +201,24 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (workspace === null) return;
+    workspaceTabsRef.current = workspaceTabs;
+  }, [workspaceTabs]);
+
+  useEffect(() => {
+    changeCursor.current = 0;
+  }, [workspace]);
+
+  useEffect(() => {
+    if (workspace === null || sessionMode !== "edit") return;
     let stopped = false;
     const poll = async (): Promise<void> => {
       try {
-        const payload = await responseJson(await fetch(`/api/workspaces/${workspace.id}/changes`));
+        const payload = await responseJson(await fetch(`/api/workspaces/${workspace.id}/changes?since=${changeCursor.current}`));
         if (stopped || typeof payload !== "object" || payload === null || !("changes" in payload) || !Array.isArray(payload.changes)) return;
+        if ("cursor" in payload && typeof payload.cursor === "number") changeCursor.current = payload.cursor;
         const changes = payload.changes.filter((value): value is WorkspaceChange => typeof value === "object" && value !== null && "kind" in value && "path" in value && typeof value.path === "string" && (value.kind === "create" || value.kind === "modify" || value.kind === "delete" || value.kind === "rename"));
         for (const change of changes) {
-          const tab = workspaceTabs.find((candidate) => candidate.path === change.path);
+          const tab = workspaceTabsRef.current.find((candidate) => candidate.path === change.path);
           if (tab?.dirty === true) setConflictPath(change.path);
           else if (tab !== undefined && change.kind !== "delete") await openWorkspaceFile(workspace.id, change.path, false);
           else if (tab !== undefined) setWorkspaceTabs((current) => current.filter((candidate) => candidate.path !== change.path));
@@ -218,7 +229,7 @@ export default function App() {
     };
     const timer = window.setInterval(() => void poll(), 700);
     return () => { stopped = true; window.clearInterval(timer); };
-  }, [workspace, workspaceTabs]);
+  }, [workspace, sessionMode]);
 
   async function openWorkspace(): Promise<void> {
     try {
