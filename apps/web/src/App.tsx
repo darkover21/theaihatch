@@ -3,7 +3,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type * as Monaco from "monaco-editor";
 import type { AnySesEvent } from "@theaihatch/ses/browser";
 import { validateSesEvent } from "@theaihatch/ses/browser";
-import { PlaybackEngine, MemoryEventSource, type PlaybackSnapshot } from "@theaihatch/playback";
 import { EditorTabs, type EditorTab } from "./features/editor/EditorTabs";
 import { Explorer, type ExplorerEntry } from "./features/explorer/Explorer";
 import { TerminalPanel, type TerminalEvent } from "./features/terminal/TerminalPanel";
@@ -11,6 +10,7 @@ import { RunPanel, type AgentRunOptions } from "./features/agent/RunPanel";
 import { ReviewPanel, type ReviewHunkView } from "./features/review/ReviewPanel";
 import { ProviderSettings, type ProviderSettingsValue } from "./features/providers/ProviderSettings";
 import fixtureText from "../../../fixtures/sessions/walking-skeleton/events.jsonl?raw";
+import { useLiveSession } from "./features/live/useLiveSession";
 
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 8, 16, 32];
 const PROVIDER_SETTINGS: ProviderSettingsValue[] = [{ id: "openai", label: "OpenAI", models: [{ id: "gpt-4o-mini", displayName: "gpt-4o-mini" }, { id: "gpt-4o", displayName: "gpt-4o" }], selectedModel: "gpt-4o-mini", configured: false }, { id: "anthropic", label: "Anthropic", models: [{ id: "claude-sonnet-4-5", displayName: "Claude Sonnet" }], selectedModel: "claude-sonnet-4-5", configured: false }, { id: "gemini", label: "Google Gemini", models: [{ id: "gemini-2.5-flash", displayName: "Gemini 2.5 Flash" }, { id: "gemini-2.5-pro", displayName: "Gemini 2.5 Pro" }], selectedModel: "gemini-2.5-flash", configured: false }];
@@ -58,16 +58,6 @@ function languageFor(path: string): string {
   if (path.endsWith(".json")) return "json";
   if (path.endsWith(".md")) return "markdown";
   return "plaintext";
-}
-
-function initialSnapshot(): PlaybackSnapshot {
-  return {
-    state: { status: "loading", cursor: -1, head: -1, speed: 1, error: null },
-    projection: { files: {}, openPaths: [], activePath: null, cursors: {}, selections: {}, scroll: {}, diffMarkers: [], terminal: "" },
-    steps: [],
-    currentStepId: null,
-    stepsBehind: 0
-  };
 }
 
 async function responseJson(response: Response): Promise<unknown> {
@@ -148,10 +138,11 @@ function terminalEvents(events: readonly AnySesEvent[]): TerminalEvent[] {
 }
 
 export default function App() {
-  const engine = useMemo(() => new PlaybackEngine(new MemoryEventSource(readFixture())), []);
-  const [snapshot, setSnapshot] = useState<PlaybackSnapshot>(initialSnapshot());
+  const fixture = useMemo(readFixture, []);
   const [theme, setTheme] = useState<"dark" | "light">(() => window.localStorage.getItem("theme") === "light" ? "light" : "dark");
   const [workspace, setWorkspace] = useState<WorkspaceHandle | null>(null);
+  const [sessionMode, setSessionMode] = useState<"watch" | "edit">("watch");
+  const { engine, snapshot } = useLiveSession(workspace?.id ?? null, fixture);
   const [workspacePath, setWorkspacePath] = useState("");
   const [workspaceEntries, setWorkspaceEntries] = useState<ExplorerEntry[]>([]);
   const [workspaceDecorations, setWorkspaceDecorations] = useState<Record<string, string>>({});
@@ -177,12 +168,6 @@ export default function App() {
   const activePath = snapshot.projection.activePath ?? snapshot.projection.openPaths[0] ?? "";
   const activeContent = activePath === "" ? "" : snapshot.projection.files[activePath] ?? "";
   const isLocked = snapshot.state.status === "playing" || snapshot.state.status === "seeking" || snapshot.state.status === "at-live-head";
-
-  useEffect(() => {
-    const unsubscribe = engine.subscribe(setSnapshot);
-    void engine.load();
-    return unsubscribe;
-  }, [engine]);
 
   useEffect(() => () => { agentAbort.current?.abort(); }, []);
 
@@ -244,6 +229,7 @@ export default function App() {
       const entries = await responseJson(await fetch(`/api/workspaces/${handle.id}/tree`));
       const status = await responseJson(await fetch(`/api/workspaces/${handle.id}/git-status`));
       setWorkspace(handle);
+      setSessionMode("watch");
       setWorkspaceEntries(parseEntries(entries));
       setWorkspaceDecorations(parseDecorations(status));
       setWorkspaceTabs([]);
@@ -406,8 +392,8 @@ export default function App() {
         </aside>
       ) : (
         <div className="workspace-explorer-shell">
-          <div className="workspace-opener"><strong>{workspace.rootName}</strong><button onClick={() => void runDemo()}>Run scripted demo</button><button onClick={() => setWorkspace(null)}>Close</button></div>
-          <Explorer rootName={workspace.rootName} entries={workspaceEntries} activePath={workspaceActivePath} decorations={workspaceDecorations} onOpenFile={(path) => void openWorkspaceFile(workspace.id, path, true)} onExpand={async (path) => parseEntries(await responseJson(await fetch(`/api/workspaces/${workspace.id}/tree?${new URLSearchParams({ path }).toString()}`)))} />
+          <div className="workspace-opener"><strong>{workspace.rootName}</strong><button onClick={() => void runDemo()}>Run scripted demo</button><button onClick={() => setSessionMode(sessionMode === "watch" ? "edit" : "watch")}>{sessionMode === "watch" ? "Take over" : "Watch"}</button><button onClick={() => { setWorkspace(null); setSessionMode("watch"); }}>Close</button></div>
+          <Explorer rootName={workspace.rootName} entries={workspaceEntries} activePath={sessionMode === "watch" ? activePath : workspaceActivePath} decorations={workspaceDecorations} onOpenFile={(path) => sessionMode === "watch" ? void engine.seekFile(path) : void openWorkspaceFile(workspace.id, path, true)} onExpand={async (path) => parseEntries(await responseJson(await fetch(`/api/workspaces/${workspace.id}/tree?${new URLSearchParams({ path }).toString()}`)))} />
           <ProviderSettings providers={providerSettings} onSelect={(providerId, modelId) => { setSelectedProviderId(providerId); setProviderSettings((providers) => providers.map((provider) => provider.id === providerId ? { ...provider, selectedModel: modelId } : provider)); }} onSaveSecret={saveProviderSecret} onTest={testProvider} />
           <RunPanel running={agentRunning} status={agentStatus} usage={agentUsage} onRun={(options) => void runAgent(options)} onCancel={cancelAgent} />
           {agentRun !== null && <div className="checkpoint-readout">checkpoint: {agentRun.checkpointId}</div>}
@@ -425,12 +411,9 @@ export default function App() {
             <div className="editor-wrap" data-testid="monaco-surface">{activePath === "" ? <div className="empty-editor">Press play to open the fixture.</div> : <Editor path={activePath} language={languageFor(activePath)} value={activeContent} theme={theme === "dark" ? "vs-dark" : "light"} onMount={(editor, monaco) => { editorRef.current = editor; monacoRef.current = monaco; }} options={{ readOnly: true, minimap: { enabled: true }, lineNumbers: "on", renderLineHighlight: "all", automaticLayout: true, padding: { top: 14 } }} />}</div>
             <section className="bottom-panel" aria-label="Playback details"><div className="bottom-heading"><span>OUTPUT</span><span className="muted">Fixture session · no provider configured</span></div><pre>{snapshot.projection.terminal || "No terminal events in this walking skeleton."}</pre></section>
           </>
-        ) : (
-          <>
-            <EditorTabs tabs={workspaceTabs} activePath={workspaceActivePath} theme={theme} readOnly={false} onFocus={setWorkspaceActivePath} onSave={(path) => void saveWorkspaceFile(path)} onClose={(path) => { setWorkspaceTabs((current) => current.filter((tab) => tab.path !== path)); if (workspaceActivePath === path) setWorkspaceActivePath(null); }} onChange={(path, content) => setWorkspaceTabs((current) => current.map((tab) => tab.path === path ? { ...tab, content, dirty: true } : tab))} />
-            <TerminalPanel {...(() => { const command = workspaceEvents.find((event) => event.type === "terminal_command"); return command?.type === "terminal_command" ? { command: command.payload.command } : {}; })()} events={terminalEvents(workspaceEvents)} collapsed={terminalCollapsed} height={terminalHeight} onToggle={() => setTerminalCollapsed((collapsed) => !collapsed)} onHeightChange={setTerminalHeight} />
-          </>
-        )}
+        ) : <>
+          {sessionMode === "watch" ? <><header className="tab-strip" aria-label="Open files">{snapshot.projection.openPaths.map((path) => <button className={`editor-tab ${activePath === path ? "active" : ""}`} key={path} onClick={() => void engine.seekFile(path)}>{path.split("/").at(-1)}</button>)}<span className="tab-spacer" /><span className="lock-indicator">🔒 watch</span></header><div className="editor-wrap" data-testid="monaco-surface">{activePath === "" ? <div className="empty-editor">Waiting for workspace events.</div> : <Editor path={activePath} language={languageFor(activePath)} value={activeContent} theme={theme === "dark" ? "vs-dark" : "light"} options={{ readOnly: true, minimap: { enabled: true }, automaticLayout: true, padding: { top: 14 } }} />}</div><section className="bottom-panel" aria-label="Playback details"><pre>{snapshot.projection.terminal}</pre></section></> : <><EditorTabs tabs={workspaceTabs} activePath={workspaceActivePath} theme={theme} readOnly={false} onFocus={setWorkspaceActivePath} onSave={(path) => void saveWorkspaceFile(path)} onClose={(path) => { setWorkspaceTabs((current) => current.filter((tab) => tab.path !== path)); if (workspaceActivePath === path) setWorkspaceActivePath(null); }} onChange={(path, content) => setWorkspaceTabs((current) => current.map((tab) => tab.path === path ? { ...tab, content, dirty: true } : tab))} /><TerminalPanel {...(() => { const command = workspaceEvents.find((event) => event.type === "terminal_command"); return command?.type === "terminal_command" ? { command: command.payload.command } : {}; })()} events={terminalEvents(workspaceEvents)} collapsed={terminalCollapsed} height={terminalHeight} onToggle={() => setTerminalCollapsed((collapsed) => !collapsed)} onHeightChange={setTerminalHeight} /></>}
+        </>}
         <footer className="status-bar"><span>{workspace === null ? snapshot.state.status : "workspace"}</span><span>Ln {workspace === null ? (activePath === "" ? 1 : (snapshot.projection.cursors[activePath]?.line ?? 0) + 1) : 1}, Col {workspace === null ? (activePath === "" ? 1 : (snapshot.projection.cursors[activePath]?.column ?? 0) + 1) : 1}</span><span className="status-grow" /><span>UTF-8</span><span>{workspace === null ? "TypeScript" : "Local project"}</span></footer>
       </section>
 

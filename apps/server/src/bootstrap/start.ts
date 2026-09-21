@@ -15,7 +15,7 @@ export interface StartServerOptions {
   autoOpen?: boolean;
   assetProvider?: AssetProvider;
   keychain?: Keychain;
-  createApp?: (mcpToken: string, assetProvider?: AssetProvider) => FastifyInstance;
+  createApp?: (mcpToken: string, assetProvider?: AssetProvider, dataDirectory?: string) => FastifyInstance;
   browserOpener?: (url: string) => Promise<void>;
   readiness?: (url: string) => Promise<void>;
 }
@@ -45,8 +45,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
 
   const mcpToken = await resolveMcpToken(options.keychain ?? new KeytarKeychain());
 
-  const createApp = options.createApp ?? ((token, assetProvider) => createServer(undefined, token, assetProvider));
-  const app = createApp(mcpToken, options.assetProvider);
+  const createApp = options.createApp ?? ((token, assetProvider, dataDirectory) => createServer(undefined, token, assetProvider, dataDirectory));
+  const app = createApp(mcpToken, options.assetProvider, options.dataDirectory);
   const listenOptions: ListenOptions = {
     host: loopbackHost,
     preferredPort: options.preferredPort ?? Number(process.env.PORT ?? 4317),

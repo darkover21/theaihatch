@@ -25,7 +25,7 @@ export function playbackReducer(state: PlaybackState, action: PlaybackAction): P
   if (action.type === "error") return { ...state, status: "error", error: action.message };
   switch (action.type) {
     case "loaded":
-      return { ...state, status: action.head < 0 ? "ended" : "paused", cursor: -1, head: action.head, error: null };
+      return { ...state, status: action.head < 0 ? "at-live-head" : "paused", cursor: -1, head: action.head, error: null };
     case "play":
       if (state.status === "error" || state.status === "loading" || state.status === "seeking" || state.status === "ended") return state;
       return { ...state, status: "playing" };
@@ -33,7 +33,6 @@ export function playbackReducer(state: PlaybackState, action: PlaybackAction): P
       if (state.status !== "playing" && state.status !== "at-live-head") return state;
       return { ...state, status: "paused" };
     case "seek-start":
-      if (state.status === "error") return state;
       return { ...state, status: "seeking" };
     case "seek-complete":
       return { ...state, status: action.cursor === action.head && action.live ? "at-live-head" : "paused", cursor: action.cursor, head: action.head, error: null };

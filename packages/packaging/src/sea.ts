@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { build } from "esbuild";
 import { createArtifactManifest, packageLayout, RELEASE_TARGETS, seaBuildPlan, writeArtifactManifest, writeSeaConfig, type ArtifactManifest, type PackageLayout, type ReleaseTarget } from "./build.js";
-import { discoverNativeAddonAssets, type NativeAddonAsset } from "./native.js";
+import { assertHostAbiMatchesAddons, discoverNativeAddonAssets, type NativeAddonAsset } from "./native.js";
 
 const require = createRequire(import.meta.url);
 
@@ -74,7 +74,8 @@ export async function bundleServer(options: BundleOptions): Promise<BundleResult
 
 export async function buildPackage(options: SeaCommandOptions): Promise<ArtifactManifest> {
   if (options.target !== hostTarget()) throw new Error(`Release target ${options.target} does not match packaging host ${hostTarget()}`);
-  if (process.versions.node.split(".")[0] !== "22") throw new Error("SEA preparation requires Node 22 and Node 22 native inputs");
+  const major = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
+  if (major < 22) throw new Error("Packaging requires Node 22 or newer");
   const projectRoot = path.resolve(options.projectRoot);
   const layout = packageLayout(path.resolve(options.outputDirectory), options.target, options.releaseVersion);
   // A release directory is published once. Never overwrite an earlier artifact
@@ -155,7 +156,7 @@ export async function discoverRuntimeAssets(projectRoot: string, outputDirectory
 }
 
 export async function prepareSea(launcher: string, assets: Record<string, string>, executable: string): Promise<void> {
-  if (process.versions.node.split(".")[0] !== "22") throw new Error("SEA preparation requires Node 22 and Node 22 native inputs");
+  assertHostAbiMatchesAddons(Object.values(assets).filter((asset) => asset.endsWith(".node")));
   const configPath = path.join(path.dirname(executable), "sea-config.json");
   await writeSeaConfig(configPath, launcher, assets);
   execFileSync(process.execPath, ["--experimental-sea-config", configPath], { encoding: "utf8", timeout: 60_000 });

@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { IgnoreMatcher } from "./ignore.js";
-import { normalizeWorkspacePath, openWorkspaceRoot, resolveWorkspacePath, type WorkspaceRoot } from "./paths.js";
+import { absoluteFromNormalized, normalizeWorkspacePath, openWorkspaceRoot, resolveWorkspacePath, type WorkspaceRoot } from "./paths.js";
 
 export type WorkspaceEntryKind = "file" | "directory";
 
@@ -57,8 +57,8 @@ export class WorkspaceTree {
       const candidate = directory === "." ? entry.name : path.posix.join(directory, entry.name);
       const isDirectory = entry.isDirectory();
       if (this.matcher.isIgnored(candidate, isDirectory)) continue;
-      const absoluteCandidate = this.absolute(candidate);
       if (entry.isSymbolicLink()) {
+        const absoluteCandidate = absoluteFromNormalized(this.root, candidate);
         try {
           const target = await fs.realpath(absoluteCandidate);
           const targetRelative = normalizeWorkspacePath(this.root, target);
@@ -106,7 +106,7 @@ export class WorkspaceTree {
 
   async deleteFile(candidate: string): Promise<void> {
     const normalized = this.normalize(candidate);
-    if (normalized === ".") throw new Error("workspace root cannot be deleted");
+    if (normalized === "." || this.matcher.isIgnored(normalized, false)) throw new Error("workspace path cannot be deleted");
     await fs.unlink(this.absolute(normalized));
   }
 }

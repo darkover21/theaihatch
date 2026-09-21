@@ -70,7 +70,7 @@ it("does not keep partially evaluated modules after a missing dependency", async
   expect(() => loadNativePackage("better-sqlite3")).toThrow(/missing/);
 });
 
-it("rejects a symlinked cache ancestor before extracting runtime files", async () => {
+it("rejects a symlinked directory planted inside the runtime cache", async () => {
   const { loadNativePackage } = await fixture({
     "node_modules/better-sqlite3/index.js": "module.exports = 42;",
   });
@@ -92,7 +92,7 @@ it("rejects relative cache overrides instead of resolving them against cwd", asy
   expect(() => loadNativePackage("better-sqlite3")).toThrow(/absolute/);
 });
 
-it("rejects an existing cache directory beneath a symlinked ancestor", async () => {
+it("allows a cache root beneath a symlinked ancestor", async () => {
   const { loadNativePackage } = await fixture({ "node_modules/better-sqlite3/index.js": "module.exports = 42;" });
   const cacheBase = directories.at(-1)!;
   const outside = await fs.mkdtemp(path.join(os.tmpdir(), "hatch-existing-cache-"));
@@ -102,6 +102,16 @@ it("rejects an existing cache directory beneath a symlinked ancestor", async () 
   await fs.symlink(outside, junction, process.platform === "win32" ? "junction" : "dir");
   vi.stubEnv("THEAIHATCH_RUNTIME_CACHE", path.join(junction, "existing"));
 
+  expect(loadNativePackage("better-sqlite3")).toBe(42);
+});
+
+it("rejects a symlink at an intermediate asset directory", async () => {
+  const { loadNativePackage } = await fixture({ "node_modules/better-sqlite3/index.js": "module.exports = 42;" });
+  const cacheBase = path.join(directories.at(-1)!, createHash("sha256").update(embedded.get("runtime-map")!).digest("hex"));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "hatch-asset-outside-"));
+  directories.push(outside);
+  const packageRoot = path.join(cacheBase, "node_modules", "better-sqlite3");
+  await fs.mkdir(path.dirname(packageRoot), { recursive: true });
+  await fs.symlink(outside, packageRoot, process.platform === "win32" ? "junction" : "dir");
   expect(() => loadNativePackage("better-sqlite3")).toThrow(/symlink|directory/i);
-  expect(await fs.readdir(path.join(outside, "existing"))).toEqual([]);
 });

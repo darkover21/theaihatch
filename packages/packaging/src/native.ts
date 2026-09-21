@@ -16,6 +16,21 @@ export interface NativeAddonAsset {
   sha256: string;
 }
 
+export function assertHostAbiMatchesAddons(nativeBinaryPaths: readonly string[]): void {
+  const major = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
+  if (!Number.isFinite(major) || major < 22) throw new Error("Packaging requires Node 22 or newer");
+  for (const binaryPath of nativeBinaryPaths) {
+    try {
+      process.dlopen({ exports: {} }, binaryPath);
+    } catch (error) {
+      const candidate = error as NodeJS.ErrnoException;
+      if (candidate.code === "ERR_DLOPEN_FAILED" && String(candidate.message).includes("NODE_MODULE_VERSION")) {
+        throw new Error(`Native addon ABI mismatch: ${binaryPath}: ${candidate.message}`, { cause: error });
+      }
+    }
+  }
+}
+
 const binaryNames: Record<NativeAddonName, string> = {
   "better-sqlite3": "better_sqlite3.node",
   keytar: "keytar.node",

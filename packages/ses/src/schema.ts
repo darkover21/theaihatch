@@ -50,7 +50,7 @@ export interface SesPayloadMap {
   step_begin: { stepId: StepId; label: string; primaryPath?: WorkspacePath };
   step_end: { stepId: StepId; outcome: StepOutcome; summary?: string };
   checkpoint: {
-    reason: "cadence" | "final";
+    reason: "cadence" | "final" | "hydration";
     files: Array<{ path: WorkspacePath; content: string | null; contentHash: string | null }>;
   };
   diff_marker: { path: WorkspacePath; range: TextRange; kind: DiffKind; hunkId: string };
@@ -130,7 +130,7 @@ export const payloadSchemas = {
   agent_tool_result: z.object({ callId: z.string().min(1), ok: z.boolean(), content: z.unknown(), errorCode: optionalString }).strict(),
   step_begin: z.object({ stepId: z.string().min(1), label: z.string().min(1).max(100), primaryPath: pathSchema.optional() }).strict(),
   step_end: z.object({ stepId: z.string().min(1), outcome: z.enum(["succeeded", "failed", "cancelled", "denied"]), summary: optionalString }).strict(),
-  checkpoint: z.object({ reason: z.enum(["cadence", "final"]), files: z.array(z.object({ path: pathSchema, content: z.string().nullable(), contentHash: z.string().nullable() }).strict()) }).strict(),
+  checkpoint: z.object({ reason: z.enum(["cadence", "final", "hydration"]), files: z.array(z.object({ path: pathSchema, content: z.string().nullable(), contentHash: z.string().nullable() }).strict()) }).strict(),
   diff_marker: z.object({ path: pathSchema, range: rangeSchema, kind: z.enum(["added", "modified", "deleted"]), hunkId: z.string().min(1) }).strict(),
   error: z.object({ code: z.string().min(1), message: z.string(), recoverable: z.boolean(), source: z.enum(["ses", "playback", "agent", "provider", "mcp", "workspace", "terminal"]), details: z.unknown().optional() }).strict()
 };

@@ -1,7 +1,7 @@
 import type { AnySesEvent } from "@theaihatch/ses/browser";
 import { offsetToPosition, positionToOffset } from "@theaihatch/ses/browser";
 import { scheduleText, interpolateCursor } from "@theaihatch/typing-sim";
-import { applyProjectionEvent, cloneProjection, emptyProjection, restoreCheckpoint, type ProjectionState } from "./projection.js";
+import { applyProjectionEvent, cloneProjection, emptyProjection, restoreCheckpointFiles, type ProjectionState } from "./projection.js";
 import { initialPlaybackState, playbackReducer, type PlaybackState } from "./state-machine.js";
 import { buildStepIndex, type PlaybackStep } from "./steps.js";
 import type { EventSource } from "./source.js";
@@ -36,14 +36,39 @@ export class PlaybackEngine {
   private runPromise: Promise<void> | null = null;
   private pauseRequested = false;
   private readonly appendWaiters = new Set<() => void>();
+  private readonly unsubscribeSource: () => void;
+  private disposed = false;
 
   constructor(private readonly source: EventSource) {
-    source.subscribe(() => {
+    this.unsubscribeSource = source.subscribe(() => {
       for (const resolve of this.appendWaiters) resolve();
       this.appendWaiters.clear();
       this.refreshHead();
+      void this.refreshLiveIndex();
       if (this.state.status === "at-live-head" && this.runPromise === null) void this.play();
     });
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.unsubscribeSource();
+    this.pause();
+  }
+
+  append(event: AnySesEvent): void {
+    const append = (this.source as EventSource & { append?: (value: AnySesEvent) => void }).append;
+    if (append === undefined) throw new Error("playback source is not appendable");
+    append.call(this.source, event);
+  }
+
+  private async refreshLiveIndex(): Promise<void> {
+    if (this.disposed) return;
+    const head = this.source.getHeadSeq();
+    const range = await this.source.readRange(0, head);
+    this.events = new Map(range.events.map((event) => [event.seq, event]));
+    this.steps = buildStepIndex(range.events);
+    this.emit();
   }
 
   async load(): Promise<void> {
@@ -148,7 +173,15 @@ export class PlaybackEngine {
       const target = Math.max(-1, Math.min(targetSeq, head));
       const checkpoint = this.source.getCheckpointAtOrBefore(target);
       const nextProjection = emptyProjection();
-      if (checkpoint !== null) restoreCheckpoint(nextProjection, checkpoint);
+      if (checkpoint !== null) restoreCheckpointFiles(nextProjection, checkpoint);
+      if (checkpoint !== null) {
+        const uiRange = await this.source.readRange(0, checkpoint.seq);
+        for (const event of uiRange.events) {
+          if (["file_open", "file_close", "tab_focus", "file_rename", "file_delete", "cursor_move", "selection_change", "scroll"].includes(event.type)) {
+            applyProjectionEvent(nextProjection, event);
+          }
+        }
+      }
       const from = checkpoint === null ? 0 : checkpoint.seq + 1;
       const range = await this.source.readRange(from, target);
       for (const event of range.events) {

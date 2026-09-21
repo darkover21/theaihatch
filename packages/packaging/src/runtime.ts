@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire, isBuiltin } from "node:module";
 import path from "node:path";
 import { getAsset } from "node:sea";
@@ -15,11 +15,19 @@ let runtime: { root: string; files: RuntimeMap["files"]; modules: Map<string, Ru
 
 function sha256(bytes: Buffer): string { return createHash("sha256").update(bytes).digest("hex"); }
 
-function ensureDirectory(directory: string): void {
+function ensureDirectory(directory: string, trustedRoot?: string): string {
   const absolute = path.resolve(directory);
-  const root = path.parse(absolute).root;
+  if (trustedRoot === undefined) {
+    mkdirSync(absolute, { recursive: true, mode: 0o700 });
+    return realpathSync.native(absolute);
+  }
+  const root = path.resolve(trustedRoot);
+  const relativeToRoot = path.relative(root, absolute);
+  if (relativeToRoot === ".." || relativeToRoot.startsWith(`..${path.sep}`) || path.isAbsolute(relativeToRoot)) {
+    throw new Error(`Unsafe runtime cache directory: ${absolute}`);
+  }
   let current = root;
-  const relative = path.relative(root, absolute);
+  const relative = relativeToRoot;
   for (const segment of relative.split(path.sep).filter((value) => value.length > 0)) {
     current = path.join(current, segment);
     if (!existsSync(current)) {
@@ -28,7 +36,15 @@ function ensureDirectory(directory: string): void {
     }
     const stat = lstatSync(current);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Unsafe runtime cache directory (symlink or non-directory): ${current}`);
+    const canonical = realpathSync.native(current);
+    if (!isWithin(root, canonical)) throw new Error(`Unsafe runtime cache directory (outside root): ${current}`);
   }
+  return absolute;
+}
+
+function isWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function extractedRuntime(): NonNullable<typeof runtime> {
@@ -37,15 +53,14 @@ function extractedRuntime(): NonNullable<typeof runtime> {
   const map = JSON.parse(bytes.toString("utf8")) as RuntimeMap;
   const cacheDirectory = process.env.THEAIHATCH_RUNTIME_CACHE ?? path.join(userPaths().data, "runtime");
   if (!path.isAbsolute(cacheDirectory)) throw new Error("THEAIHATCH_RUNTIME_CACHE must be an absolute path");
-  const root = path.join(cacheDirectory, sha256(bytes));
-  ensureDirectory(root);
+  const root = ensureDirectory(path.join(cacheDirectory, sha256(bytes)));
   for (const [relative, asset] of Object.entries(map.files)) {
     if (relative.includes("\\") || relative.includes(":") || relative.includes("\0") || relative.split("/").some((part) => part === ".." || part === "." || part === "") || path.isAbsolute(relative)) throw new Error(`Invalid runtime asset: ${relative}`);
     const filename = path.join(root, relative);
     let directory = root;
     for (const segment of relative.split("/").slice(0, -1)) {
       directory = path.join(directory, segment);
-      ensureDirectory(directory);
+      ensureDirectory(directory, root);
     }
     const embedded = Buffer.from(getAsset(asset.key));
     if (sha256(embedded) !== asset.sha256) throw new Error(`Corrupt embedded runtime asset: ${asset.key}`);

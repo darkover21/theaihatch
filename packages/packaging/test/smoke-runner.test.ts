@@ -21,12 +21,12 @@ vi.mock("node:child_process", async (importOriginal) => {
 });
 
 const directories: string[] = [];
-const smokeIt = process.versions.node.split(".")[0] === "22" ? it : it.skip;
+const smokeIt = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10) >= 22 ? it : it.skip;
 let executable: string;
 let fixtureDirectory: string;
 
 beforeAll(async () => {
-  if (process.versions.node.split(".")[0] !== "22") return;
+  if (Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10) < 22) return;
   fixtureDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "hatch-smoke-fixture-"));
   const launcher = path.join(fixtureDirectory, "fixture.cjs");
   executable = path.join(fixtureDirectory, process.platform === "win32" ? "fixture.exe" : "fixture");

@@ -57,16 +57,26 @@ function existingCanonicalPath(candidate: string): string | null {
   }
 }
 
+function canonicalizeDeepest(absolute: string): string {
+  let current = absolute;
+  const tail: string[] = [];
+  while (existingCanonicalPath(current) === null) {
+    const parent = path.dirname(current);
+    if (parent === current) return absolute;
+    tail.unshift(path.basename(current));
+    current = parent;
+  }
+  return tail.reduce((value, segment) => path.join(value, segment), existingCanonicalPath(current) ?? current);
+}
+
 export function normalizeWorkspacePath(root: WorkspaceRoot, candidate: string): string {
   if (candidate.includes("\u0000")) throw new WorkspacePathError("workspace path contains a NUL character");
   const nativeCandidate = candidate.replace(/[\\/]+/gu, path.sep);
   const absolute = path.isAbsolute(nativeCandidate)
     ? path.normalize(nativeCandidate)
     : path.resolve(root.canonicalPath, nativeCandidate || ".");
-  ensureWithin(root, absolute);
-
-  const canonicalCandidate = existingCanonicalPath(absolute);
-  if (canonicalCandidate !== null) ensureWithin(root, canonicalCandidate);
+  const canonicalCandidate = isWithin(root.canonicalPath, absolute) ? (existingCanonicalPath(absolute) ?? absolute) : canonicalizeDeepest(absolute);
+  ensureWithin(root, canonicalCandidate);
 
   const relative = path.relative(root.canonicalPath, canonicalCandidate ?? absolute);
   if (relative === "") return ".";
@@ -78,10 +88,11 @@ export function normalizeWorkspacePath(root: WorkspaceRoot, candidate: string): 
 
 export function resolveWorkspacePath(root: WorkspaceRoot, candidate: string): string {
   const normalized = normalizeWorkspacePath(root, candidate);
-  const absolute = normalized === "." ? root.canonicalPath : path.resolve(root.canonicalPath, normalized.split("/").join(path.sep));
-  const canonicalCandidate = existingCanonicalPath(absolute);
-  if (canonicalCandidate !== null) ensureWithin(root, canonicalCandidate);
-  return absolute;
+  return absoluteFromNormalized(root, normalized);
+}
+
+export function absoluteFromNormalized(root: WorkspaceRoot, normalizedRelative: string): string {
+  return normalizedRelative === "." ? root.canonicalPath : path.resolve(root.canonicalPath, normalizedRelative.split("/").join(path.sep));
 }
 
 export function workspacePathFromAbsolute(root: WorkspaceRoot, candidate: string): string {

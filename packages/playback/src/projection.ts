@@ -54,6 +54,13 @@ export function restoreCheckpoint(projection: ProjectionState, event: AnySesEven
   projection.scroll = {};
 }
 
+export function restoreCheckpointFiles(projection: ProjectionState, event: AnySesEvent): void {
+  if (event.type !== "checkpoint") throw new Error("restore requires a checkpoint event");
+  projection.files = Object.fromEntries(event.payload.files.flatMap((file) => file.content === null ? [] : [[file.path, file.content]]));
+  projection.openPaths = projection.openPaths.filter((path) => projection.files[path] !== undefined);
+  if (projection.activePath !== null && projection.files[projection.activePath] === undefined) projection.activePath = projection.openPaths.at(-1) ?? null;
+}
+
 export function applyProjectionEvent(projection: ProjectionState, event: AnySesEvent): void {
   switch (event.type) {
     case "file_create":
@@ -105,7 +112,7 @@ export function applyProjectionEvent(projection: ProjectionState, event: AnySesE
       requireFile(projection, event.payload.path);
       return;
     case "checkpoint":
-      restoreCheckpoint(projection, event);
+      restoreCheckpointFiles(projection, event);
       return;
     case "diff_marker":
       projection.diffMarkers.push({ path: event.payload.path, range: event.payload.range, kind: event.payload.kind, hunkId: event.payload.hunkId });

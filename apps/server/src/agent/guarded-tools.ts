@@ -3,7 +3,7 @@ import { diffFile, type FileDiff, type ReviewHunk } from "@theaihatch/review";
 import { classifyCommand, createPathPolicy, createShellPolicy, DryRunRecorder, type PathPolicy } from "@theaihatch/safety";
 import { ReviewRepository, SafetyAuditRepository } from "@theaihatch/storage";
 import { WorkspaceTree } from "@theaihatch/workspace";
-import type { SesWriter } from "../ses.js";
+import type { SesAppender } from "../ses.js";
 import { ProcessRunner } from "../terminal/process-runner.js";
 import { TerminalRecorder } from "../terminal/terminal-recorder.js";
 import { ApprovalBroker } from "./approval-broker.js";
@@ -13,7 +13,7 @@ export interface GuardedToolContext {
   operationId: string;
   checkpointId: string;
   tree: WorkspaceTree;
-  writer: SesWriter;
+  writer: SesAppender;
   dryRun: boolean;
   reviewMode: boolean;
   approvals: ApprovalBroker;

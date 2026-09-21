@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export interface ExplorerEntry {
   name: string;
@@ -23,6 +23,7 @@ function decorationFor(path: string, decorations: Readonly<Record<string, string
 export function Explorer({ rootName, entries, activePath, decorations, onOpenFile, onExpand }: ExplorerProps) {
   const [children, setChildren] = useState<Record<string, ExplorerEntry[]>>({ ".": [...entries] });
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  useEffect(() => { setChildren((current) => ({ ...current, ".": [...entries] })); }, [entries]);
   const toggle = async (entry: ExplorerEntry): Promise<void> => {
     if (entry.kind !== "directory") return;
     if (expanded.has(entry.path)) {

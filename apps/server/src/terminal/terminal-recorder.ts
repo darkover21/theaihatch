@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { SesWriter } from "../ses.js";
+import type { SesAppender } from "../ses.js";
 import { ProcessRunner, type ProcessResult } from "./process-runner.js";
 
 export interface RecordedCommand {
@@ -11,7 +11,7 @@ export interface RecordedCommand {
 }
 
 export class TerminalRecorder {
-  constructor(private readonly writer: SesWriter, private readonly runner: ProcessRunner) {}
+  constructor(private readonly writer: SesAppender, private readonly runner: ProcessRunner) {}
 
   async run(input: RecordedCommand): Promise<ProcessResult> {
     const commandId = input.commandId ?? randomUUID();

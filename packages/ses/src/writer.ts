@@ -11,6 +11,11 @@ export interface SesWriterOptions {
   sessionStartMs?: number;
 }
 
+export interface SesAppender {
+  append(input: SesEventInput): Promise<AnySesEvent[]>;
+  readonly currentFiles: ReadonlyMap<string, string | null>;
+}
+
 function ensureSafeSessionId(sessionId: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(sessionId)) throw new Error("invalid session identifier");
 }
@@ -20,7 +25,7 @@ export function sessionDirectory(dataDir: string, sessionId: string): string {
   return path.resolve(dataDir, "sessions", sessionId);
 }
 
-export class SesWriter {
+export class SesWriter implements SesAppender {
   private readonly streamPath: string;
   private readonly clock: () => number;
   private readonly sessionStartMs: number;
@@ -71,7 +76,7 @@ export class SesWriter {
     return operation;
   }
 
-  async appendCheckpoint(reason: "cadence" | "final" = "final"): Promise<AnySesEvent[]> {
+  async appendCheckpoint(reason: "cadence" | "final" | "hydration" = "final"): Promise<AnySesEvent[]> {
     return this.append({ type: "checkpoint", payload: { reason, files: checkpointFiles(this.projection) } });
   }
 
