@@ -9,6 +9,8 @@ import { ChangeLog, readGitStatus, WorkspaceTree, WorkspaceWatcher, type GitStat
 import { userPaths } from "@theaihatch/packaging";
 import { runWorkspaceDemo } from "../scripts/workspace-demo.js";
 import { WorkspaceStream } from "../workspace/workspace-stream.js";
+import { SessionRepository } from "@theaihatch/storage";
+import { acquireLock, releaseLock, resolveSession, SessionProgressReporter } from "../workspace/session-store.js";
 import { hashContent, recordCommittedEdit } from "../agent/ses-recorder.js";
 
 const openWorkspaceBody = z.object({ path: z.string().min(1) }).strict();
@@ -16,7 +18,8 @@ const workspaceParams = z.object({ id: z.string().uuid() }).strict();
 const treeQuery = z.object({ path: z.string().optional() }).strict();
 const fileQuery = z.object({ path: z.string().min(1) }).strict();
 const fileWriteBody = z.object({ path: z.string().min(1), content: z.string() }).strict();
-const workspaceResponse = z.object({ id: z.string().uuid(), rootName: z.string(), canonicalRoot: z.string() }).strict();
+// headSeq and resumed let the client tell "reattached to an existing recording" from "fresh folder".
+const workspaceResponse = z.object({ id: z.string().uuid(), rootName: z.string(), canonicalRoot: z.string(), headSeq: z.number().int(), resumed: z.boolean() }).strict();
 const entryResponse = z.object({ name: z.string(), path: z.string(), kind: z.enum(["file", "directory"]) }).strict();
 const treeResponse = z.object({ entries: z.array(entryResponse) }).strict();
 const fileResponse = z.object({ path: z.string(), content: z.string() }).strict();
@@ -33,6 +36,7 @@ export interface WorkspaceRecord {
   readonly changes: WorkspaceChange[];
   readonly changeLog: ChangeLog<WorkspaceChange>;
   readonly stream: WorkspaceStream;
+  readonly resumed: boolean;
   externalQueue: Promise<void>;
   demoEvents: AnySesEvent[] | null;
   gitStatus: GitStatusSnapshot;
@@ -40,8 +44,17 @@ export interface WorkspaceRecord {
 
 export class WorkspaceRegistry {
   private readonly records = new Map<string, WorkspaceRecord>();
+  private sessions: SessionRepository | null = null;
+  private readonly reporters = new Map<string, SessionProgressReporter>();
 
   constructor(private readonly eventSink: WorkspaceEventSink = () => undefined, private readonly dataDirectory = userPaths().data) {}
+
+  // Opened lazily so constructing a registry never creates a SQLite file; several tests build one and
+  // never open a workspace.
+  private sessionRepository(): SessionRepository {
+    this.sessions ??= new SessionRepository(this.dataDirectory);
+    return this.sessions;
+  }
 
   async emit(event: Parameters<WorkspaceStream["append"]>[0]): Promise<AnySesEvent[]> {
     const record = this.records.size > 0 ? [...this.records.values()].at(-1) : undefined;
@@ -51,11 +64,23 @@ export class WorkspaceRegistry {
 
   async open(candidate: string): Promise<WorkspaceRecord> {
     const tree = await WorkspaceTree.open(candidate);
+    // Opening a folder that is already open returns the same record. Without this, a reload created a
+    // second watcher and a second writer over the same tree, and the older stream was abandoned.
+    const alreadyOpen = await this.byRoot(tree.root.canonicalPath);
+    if (alreadyOpen !== undefined) return alreadyOpen;
+
+    const sessions = this.sessionRepository();
+    const resolved = await resolveSession(sessions, this.dataDirectory, tree.root.canonicalPath);
     const watcher = new WorkspaceWatcher(tree);
-    const id = randomUUID();
+    const id = resolved.id;
+    await acquireLock(this.dataDirectory, id);
     const stream = await WorkspaceStream.open(this.dataDirectory, id);
+    const reporter = new SessionProgressReporter(sessions, id, stream.integrity);
+    stream.observeProgress((headSeq, durationMs, isCheckpoint) => reporter.record(headSeq, durationMs, isCheckpoint));
+    this.reporters.set(id, reporter);
+    sessions.markStarted(id);
     stream.subscribe(0, (event) => this.eventSink(event));
-    const record: WorkspaceRecord = { id, tree, watcher, stream, externalQueue: Promise.resolve(), changes: [], changeLog: new ChangeLog(), demoEvents: null, gitStatus: await readGitStatus(tree.root) };
+    const record: WorkspaceRecord = { id, tree, watcher, stream, resumed: resolved.resumed, externalQueue: Promise.resolve(), changes: [], changeLog: new ChangeLog(), demoEvents: null, gitStatus: await readGitStatus(tree.root) };
     watcher.subscribe((change) => {
       record.changes.push(change);
       if (record.changes.length > 100) record.changes.shift();
@@ -67,7 +92,8 @@ export class WorkspaceRegistry {
     });
     await watcher.start();
     this.records.set(record.id, record);
-    await this.emit({ type: "workspace_open", payload: { rootName: tree.root.rootName, canonicalRoot: tree.root.canonicalPath } });
+    // A resumed session records that the folder was reopened, which also gives the timeline a marker.
+    await record.stream.append({ type: "workspace_open", payload: { rootName: tree.root.rootName, canonicalRoot: tree.root.canonicalPath } });
     return record;
   }
 
@@ -96,7 +122,24 @@ export class WorkspaceRegistry {
     await record.watcher.stop();
     await record.externalQueue;
     await record.stream.close();
+    const reporter = this.reporters.get(id);
+    reporter?.flush();
+    this.reporters.delete(id);
+    try {
+      this.sessionRepository().markEnded(id, "completed");
+    } catch {
+      // Metadata is a convenience; a closed workspace must not fail because SQLite did.
+    }
+    // Released last, so nothing else can claim the session while this one is still writing to it.
+    await releaseLock(this.dataDirectory, id);
     this.records.delete(id);
+  }
+
+  /** Closes every open workspace, so shutdown releases each session's writer lock. */
+  async closeAll(): Promise<void> {
+    for (const id of [...this.records.keys()]) await this.close(id).catch(() => undefined);
+    this.sessions?.close();
+    this.sessions = null;
   }
 
   async refreshGitStatus(id: string): Promise<GitStatusSnapshot> {
@@ -153,7 +196,7 @@ export function registerWorkspaceRoutes(app: FastifyInstance, registry = new Wor
     try {
       const body = openWorkspaceBody.parse(request.body);
       const record = await registry.open(body.path);
-      return workspaceResponse.parse({ id: record.id, rootName: record.tree.root.rootName, canonicalRoot: record.tree.root.canonicalPath });
+      return workspaceResponse.parse({ id: record.id, rootName: record.tree.root.rootName, canonicalRoot: record.tree.root.canonicalPath, headSeq: record.stream.headSeq, resumed: record.resumed });
     } catch (error) {
       return sendError(reply, 400, error);
     }

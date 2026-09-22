@@ -1,5 +1,5 @@
 import path from "node:path";
-import { SesReader, SesWriter, sessionDirectory, type AnySesEvent, type SesAppender, type SesEventInput } from "../ses.js";
+import { SesReader, SesWriter, sessionDirectory, type AnySesEvent, type IntegrityStatus, type SesAppender, type SesEventInput } from "../ses.js";
 
 export type WorkspaceStreamSubscriber = (event: AnySesEvent) => void;
 
@@ -9,16 +9,27 @@ export class WorkspaceStream implements SesAppender {
   private readonly tail: AnySesEvent[] = [];
   private readonly subscribers = new Set<WorkspaceStreamSubscriber>();
   private openStepId: string | null = null;
-  private constructor(private readonly writer: SesWriter, private readonly streamPath: string) {}
+  private onAppend: ((headSeq: number, durationMs: number, isCheckpoint: boolean) => void) | null = null;
+  private constructor(private readonly writer: SesWriter, private readonly streamPath: string, readonly integrity: IntegrityStatus) {}
 
   static async open(dataDirectory: string, sessionId: string): Promise<WorkspaceStream> {
     const directory = sessionDirectory(dataDirectory, sessionId);
-    return new WorkspaceStream(await SesWriter.open(directory), path.join(directory, "events.jsonl"));
+    const streamPath = path.join(directory, "events.jsonl");
+    // Read the integrity of what is already on disk before appending to it, so a resumed session can
+    // record whether its prior contents were recovered or clean.
+    const integrity = (await SesReader.open(streamPath).then((reader) => reader.integrity, () => "valid" as IntegrityStatus));
+    return new WorkspaceStream(await SesWriter.open(directory), streamPath, integrity);
   }
 
   get currentFiles(): ReadonlyMap<string, string | null> { return this.writer.currentFiles; }
   get headSeq(): number { return this.writer.headSeq; }
+  get currentTime(): number { return this.writer.currentTime; }
   get hasOpenStep(): boolean { return this.openStepId !== null; }
+
+  /** Reports committed progress so session metadata can track the head without scanning the stream. */
+  observeProgress(listener: (headSeq: number, durationMs: number, isCheckpoint: boolean) => void): void {
+    this.onAppend = listener;
+  }
 
   async append(input: SesEventInput): Promise<AnySesEvent[]> {
     if (input.type === "step_begin") {
@@ -32,6 +43,7 @@ export class WorkspaceStream implements SesAppender {
       this.tail.push(event);
       if (this.tail.length > TAIL_LIMIT) this.tail.shift();
       for (const subscriber of this.subscribers) subscriber(event);
+      this.onAppend?.(event.seq, event.t, event.type === "checkpoint");
     }
     return events;
   }
