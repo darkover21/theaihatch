@@ -14,6 +14,7 @@ const events: SesEventInput[] = [];
 let app: FastifyInstance;
 let baseUrl: string;
 let workspaceRoot: string;
+let dataDirectory: string;
 let workspaceId: string;
 let client: McpTransport;
 
@@ -22,7 +23,9 @@ const postMcp = (body: unknown, authorization = `Bearer ${token}`): Promise<Resp
 beforeAll(async () => {
   workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "theaihatch-mcp-e2e-"));
   await fs.writeFile(path.join(workspaceRoot, "notes.txt"), "before\n", "utf8");
-  app = createServer((event) => { events.push(event); }, token);
+  // An explicit data directory keeps session streams out of the real user data directory.
+  dataDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "theaihatch-mcp-e2e-data-"));
+  app = createServer((event) => { events.push(event); }, token, undefined, dataDirectory);
   await app.listen({ host: "127.0.0.1", port: 0 });
   baseUrl = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
   const opened = await fetch(`${baseUrl}/api/workspaces`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: workspaceRoot }) });
@@ -36,6 +39,7 @@ afterAll(async () => {
   await fetch(`${baseUrl}/api/workspaces/${workspaceId}`, { method: "DELETE" });
   await app.close();
   await fs.rm(workspaceRoot, { recursive: true, force: true });
+  await fs.rm(dataDirectory, { recursive: true, force: true });
 });
 
 describe("inbound MCP over streamable HTTP", () => {

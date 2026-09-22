@@ -4,7 +4,7 @@ import path from "node:path";
 import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
 import { SesReader, SesWriter } from "@theaihatch/ses";
-import { registerWorkspaceRoutes } from "../src/routes/workspaces.js";
+import { registerWorkspaceRoutes, WorkspaceRegistry } from "../src/routes/workspaces.js";
 import { ProcessRunner } from "../src/terminal/process-runner.js";
 import { TerminalRecorder } from "../src/terminal/terminal-recorder.js";
 import { openWorkspaceRoot } from "@theaihatch/workspace";
@@ -14,6 +14,14 @@ const temporaryDirectories: string[] = [];
 afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })));
 });
+
+// Without an explicit data directory the registry writes session streams into the real user data
+// directory, so every test run left an orphaned session behind on the developer's machine.
+async function dataDirectory(): Promise<string> {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "theaihatch-server-data-"));
+  temporaryDirectories.push(directory);
+  return directory;
+}
 
 async function fixture(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "theaihatch-server-"));
@@ -25,7 +33,7 @@ async function fixture(): Promise<string> {
 describe("workspace HTTP routes", () => {
   it("REQ-WKS-001 and REQ-WKS-002: opens a handle and reads a stable tree/file", async () => {
     const app = Fastify();
-    registerWorkspaceRoutes(app);
+    registerWorkspaceRoutes(app, new WorkspaceRegistry(undefined, await dataDirectory()));
     const root = await fixture();
     const opened = await app.inject({ method: "POST", url: "/api/workspaces", payload: { path: root } });
     expect(opened.statusCode).toBe(200);
@@ -42,7 +50,7 @@ describe("workspace HTTP routes", () => {
 
   it("REQ-WKS-003, REQ-TRM-001, and REQ-TRM-005: runs the provider-free workspace demo as replayable SES", async () => {
     const app = Fastify();
-    registerWorkspaceRoutes(app);
+    registerWorkspaceRoutes(app, new WorkspaceRegistry(undefined, await dataDirectory()));
     const root = await fixture();
     const opened = await app.inject({ method: "POST", url: "/api/workspaces", payload: { path: root } });
     const handle = (opened.json() as { id: string }).id;

@@ -30,9 +30,11 @@ export function cloneProjection(source: ProjectionState): ProjectionState {
 }
 
 function applyFileDelta(projection: ProjectionState, event: AnySesEvent): void {
+  // Playback only needs the file contents; the touched/pending sets exist for the writer's checkpointing.
   const state: FileProjectionState = {
     files: new Map(Object.entries(projection.files)),
-    touched: new Set(Object.keys(projection.files))
+    touched: new Set(Object.keys(projection.files)),
+    pending: new Set()
   };
   applyFileEvent(state, event);
   projection.files = Object.fromEntries([...state.files].flatMap(([path, content]) => content === null ? [] : [[path, content]]));
@@ -54,9 +56,20 @@ export function restoreCheckpoint(projection: ProjectionState, event: AnySesEven
   projection.scroll = {};
 }
 
+// Merges rather than replaces: a "delta" checkpoint names only the files touched since the previous one,
+// so replacing would drop everything it left out. For a full checkpoint applied to the empty projection
+// a seek starts from, merging and replacing are the same thing.
 export function restoreCheckpointFiles(projection: ProjectionState, event: AnySesEvent): void {
   if (event.type !== "checkpoint") throw new Error("restore requires a checkpoint event");
-  projection.files = Object.fromEntries(event.payload.files.flatMap((file) => file.content === null ? [] : [[file.path, file.content]]));
+  const merged = new Map(Object.entries(projection.files));
+  for (const file of event.payload.files) {
+    if (file.content === null) merged.delete(file.path);
+    else merged.set(file.path, file.content);
+  }
+  // Key order is observable through JSON.stringify, which the seek/linear determinism test compares. A
+  // checkpoint must therefore leave the same order whether it replaced the projection or merged into one,
+  // so sort on the same collation checkpointFiles writes its payload in.
+  projection.files = Object.fromEntries([...merged].sort(([left], [right]) => left.localeCompare(right)));
   projection.openPaths = projection.openPaths.filter((path) => projection.files[path] !== undefined);
   if (projection.activePath !== null && projection.files[projection.activePath] === undefined) projection.activePath = projection.openPaths.at(-1) ?? null;
 }

@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { AnySesEvent, WorkspacePath } from "./schema.js";
-import { validateSesEvent } from "./schema.js";
+import { isFullCheckpoint, validateSesEvent } from "./schema.js";
 
 export type IntegrityStatus = "valid" | "recovered" | "corrupt";
 
@@ -131,10 +131,14 @@ export class SesReader {
     return this.eventsBySeq.get(seq);
   }
 
+  // Only a full checkpoint can seed a restore. A "delta" one restates just the files touched since the
+  // previous checkpoint, so seeking to it would silently drop every file it left out.
   getCheckpointAtOrBefore(targetSeq: number): AnySesEvent | null {
     for (let index = this.entries.length - 1; index >= 0; index -= 1) {
       const entry = this.entries[index];
-      if (entry !== undefined && entry.seq <= targetSeq && entry.type === "checkpoint") return this.eventsBySeq.get(entry.seq) ?? null;
+      if (entry === undefined || entry.seq > targetSeq || entry.type !== "checkpoint") continue;
+      const event = this.eventsBySeq.get(entry.seq);
+      if (event !== undefined && isFullCheckpoint(event)) return event;
     }
     return null;
   }

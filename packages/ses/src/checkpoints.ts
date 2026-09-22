@@ -2,15 +2,18 @@ import type { AnySesEvent, Position, SesEvent, WorkspacePath } from "./schema.js
 
 export interface FileProjectionState {
   files: Map<WorkspacePath, string | null>;
+  /** Every path the session has ever touched — the contents of a full checkpoint. */
   touched: Set<WorkspacePath>;
+  /** Paths touched since the last checkpoint — the contents of a "delta" checkpoint. */
+  pending: Set<WorkspacePath>;
 }
 
 export function createFileProjection(): FileProjectionState {
-  return { files: new Map(), touched: new Set() };
+  return { files: new Map(), touched: new Set(), pending: new Set() };
 }
 
 export function cloneFileProjection(source: FileProjectionState): FileProjectionState {
-  return { files: new Map(source.files), touched: new Set(source.touched) };
+  return { files: new Map(source.files), touched: new Set(source.touched), pending: new Set(source.pending) };
 }
 
 function lineStarts(text: string): number[] {
@@ -52,6 +55,7 @@ function fileContent(state: FileProjectionState, path: WorkspacePath): string {
 
 function markTouched(state: FileProjectionState, path: WorkspacePath): void {
   state.touched.add(path);
+  state.pending.add(path);
 }
 
 export function applyFileEvent(state: FileProjectionState, event: AnySesEvent): void {
@@ -101,18 +105,24 @@ export function applyFileEvent(state: FileProjectionState, event: AnySesEvent): 
       return;
     }
     case "checkpoint":
+      // Merging rather than replacing is what lets a "delta" checkpoint apply on top of earlier state,
+      // and is equivalent to replacing for a full one applied to an empty projection.
       for (const file of event.payload.files) {
         state.files.set(file.path, file.content);
         state.touched.add(file.path);
       }
+      // Whatever was pending is now recorded in the stream, whichever kind of checkpoint this is.
+      state.pending.clear();
       return;
     default:
       return;
   }
 }
 
-export function checkpointFiles(state: FileProjectionState): SesEvent<"checkpoint">["payload"]["files"] {
-  return [...state.touched]
+export type CheckpointScope = "full" | "delta";
+
+export function checkpointFiles(state: FileProjectionState, scope: CheckpointScope = "full"): SesEvent<"checkpoint">["payload"]["files"] {
+  return [...(scope === "full" ? state.touched : state.pending)]
     .sort((left, right) => left.localeCompare(right))
     .map((path) => {
       const content = state.files.get(path) ?? null;
