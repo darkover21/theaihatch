@@ -72,3 +72,39 @@ it("reconstructs identical file state across delta checkpoints", async () => {
   expect(anchor?.type).toBe("checkpoint");
   expect(anchor !== null && anchor.type === "checkpoint" && anchor.payload.reason).not.toBe("delta");
 });
+
+// Event timestamps are milliseconds since the session began. A reopened writer anchors that clock at
+// "now" before it knows the stream already ran to lastTime. Uncorrected, this stream records
+// [120, 500, 500, 1000]: the first resumed event collapses onto lastTime with no gap at all, and the
+// rest are measured from the reopen instant. Playback sleeps on those gaps, so they have to be real.
+it("keeps session-relative time advancing across a resume", async () => {
+  const directory = await makeDir("resume-clock");
+  let now = 1_000_000;
+  const clock = (): number => now;
+
+  const first = await SesWriter.open(directory, { clock });
+  now += 120;
+  await first.append({ type: "file_create", payload: { path: "a.ts" } });
+  now += 380;
+  await first.append({ type: "file_save", payload: { path: "a.ts", contentHash: "h" } });
+  const beforeClose = first.currentTime;
+  expect(beforeClose).toBe(500);
+  await first.close();
+
+  // The process stops for a while, then the session is reopened.
+  now += 60_000;
+  const resumed = await SesWriter.open(directory, { clock });
+  now += 250;
+  await resumed.append({ type: "file_save", payload: { path: "a.ts", contentHash: "h2" } });
+  now += 750;
+  await resumed.append({ type: "file_save", payload: { path: "a.ts", contentHash: "h3" } });
+  await resumed.close();
+
+  const reader = await SesReader.open(path.join(directory, "events.jsonl"));
+  const times = (await reader.readRange(0, reader.headSeq)).events.map((event) => event.t);
+  expect(times).toEqual([120, 500, 750, 1_500]);
+
+  // The idle time between sessions is not charged to the stream, and each resumed event keeps its own gap.
+  expect(times[2]! - times[1]!).toBe(250);
+  expect(times[3]! - times[2]!).toBe(750);
+});

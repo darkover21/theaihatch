@@ -28,7 +28,7 @@ export function sessionDirectory(dataDir: string, sessionId: string): string {
 export class SesWriter implements SesAppender {
   private readonly streamPath: string;
   private readonly clock: () => number;
-  private readonly sessionStartMs: number;
+  private sessionStartMs: number;
   private handle: FileHandle | null = null;
   private sequence = -1;
   private lastTime = 0;
@@ -61,6 +61,12 @@ export class SesWriter implements SesAppender {
       } else writer.eventsSinceCheckpoint += 1;
       applyFileEvent(writer.projection, event);
     }
+    // Event timestamps are milliseconds since the session began, and the constructor anchored that to
+    // "now" before knowing the stream already ran to lastTime. Left alone, appendNow's
+    // max(lastTime, now - sessionStartMs) collapses the first events after a reopen onto lastTime and
+    // then measures the rest from the reopen instant, so the recorded gaps no longer match what
+    // happened. Playback sleeps on those gaps. Rewind the anchor instead, unless the caller pinned it.
+    if (options.sessionStartMs === undefined && writer.lastTime > 0) writer.sessionStartMs = writer.clock() - writer.lastTime;
     writer.handle = await fs.open(writer.streamPath, "a+");
     return writer;
   }

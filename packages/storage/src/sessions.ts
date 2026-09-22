@@ -52,6 +52,9 @@ export class SessionRepository {
         integrity TEXT NOT NULL DEFAULT 'unchecked'
       )
     `);
+    // Resuming a workspace looks its prior session up by folder, which is the only non-primary-key
+    // lookup this table serves. Creating it here keeps existing databases working without a migration.
+    this.database.exec("CREATE INDEX IF NOT EXISTS sessions_workspace_path ON sessions(workspace_path)");
   }
 
   create(input: Pick<SessionMetadata, "id" | "workspacePath"> & Partial<Pick<SessionMetadata, "providerId" | "modelId">>): SessionMetadata {
@@ -86,6 +89,21 @@ export class SessionRepository {
   list(): SessionMetadata[] {
     const rows = this.database.prepare("SELECT * FROM sessions ORDER BY created_at ASC").all() as SessionRow[];
     return rows.map((row) => this.toMetadata(row));
+  }
+
+  /** The session a workspace folder should resume into, or null when that folder has never been opened. */
+  findLatestByWorkspacePath(workspacePath: string): SessionMetadata | null {
+    const row = this.database.prepare("SELECT * FROM sessions WHERE workspace_path = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(workspacePath) as SessionRow | undefined;
+    return row === undefined ? null : this.toMetadata(row);
+  }
+
+  /** Idempotent: a session resumed several times keeps the moment it first recorded anything. */
+  markStarted(id: SessionId): void {
+    this.database.prepare("UPDATE sessions SET status = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?").run(new Date().toISOString(), id);
+  }
+
+  markEnded(id: SessionId, status: SessionMetadata["status"]): void {
+    this.database.prepare("UPDATE sessions SET status = ?, ended_at = ? WHERE id = ?").run(status, new Date().toISOString(), id);
   }
 
   updateProgress(id: SessionId, headSeq: number, durationMs: number, integrity: SessionMetadata["integrity"]): void {
