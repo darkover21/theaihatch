@@ -46,13 +46,51 @@ describe("playback state machine", () => {
   });
 
   it("REQ-PLY-004 and REQ-STP-005: group stepping lands at boundaries", async () => {
-    const engine = new PlaybackEngine(new MemoryEventSource(events));
+    // stepForward now animates, so the injected sleep keeps this exercising the animated path without
+    // paying a real per-character delay. The cursor assertions also prove animated and instant playback
+    // land on the same sequence.
+    const engine = new PlaybackEngine(new MemoryEventSource(events), { sleep: async () => undefined });
     await engine.load();
     await engine.seek(3);
     await engine.stepForward();
     expect(engine.getSnapshot().state.cursor).toBe(4);
     await engine.stepBackward();
     expect(engine.getSnapshot().state.cursor).toBe(0);
+  });
+
+  it("REQ-PLY-004: repeated step-forward keeps advancing past a step boundary", async () => {
+    const engine = new PlaybackEngine(new MemoryEventSource(events), { sleep: async () => undefined });
+    await engine.load();
+    // Landing exactly on a step's end used to match that same step again, so the seek was a no-op and
+    // the button did nothing from then on.
+    await engine.stepForward();
+    const first = engine.getSnapshot().state.cursor;
+    await engine.stepForward();
+    const second = engine.getSnapshot().state.cursor;
+    expect(second).toBeGreaterThan(first);
+  });
+
+  it("REQ-STP-005: playStep replays one step and stops at its end", async () => {
+    const engine = new PlaybackEngine(new MemoryEventSource(events), { sleep: async () => undefined });
+    await engine.load();
+    const step = engine.getSnapshot().steps[1];
+    expect(step).toBeDefined();
+    await engine.playStep(step!.id);
+    expect(engine.getSnapshot().state.cursor).toBe(step!.endSeq);
+    // A bounded run settles on paused, not at-live-head, or the source subscription would restart it.
+    expect(engine.getSnapshot().state.status).toBe("paused");
+  });
+
+  it("play during a bounded step replay promotes it to unbounded", async () => {
+    const engine = new PlaybackEngine(new MemoryEventSource(events), { sleep: async () => undefined });
+    await engine.load();
+    const step = engine.getSnapshot().steps[0];
+    expect(step).toBeDefined();
+    const bounded = engine.playStep(step!.id);
+    await engine.play();
+    await bounded;
+    // Promoted, so it ran past the step's end rather than stopping there.
+    expect(engine.getSnapshot().state.cursor).toBeGreaterThan(step!.endSeq);
   });
 
   it("REQ-PLY-005 and REQ-SES-006: seek restores the nearest checkpoint", async () => {

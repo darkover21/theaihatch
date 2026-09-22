@@ -390,7 +390,7 @@ export default function App() {
       <div className="panel-heading"><span>STEPS</span><span className="muted">{snapshot.steps.length}</span></div>
       {snapshot.steps.length === 0
         ? <p className="step-empty">No steps yet.</p>
-        : snapshot.steps.map((step) => <button className={`step-row ${snapshot.currentStepId === step.id ? "selected" : ""}`} key={step.id} onClick={() => void engine.seek(step.startSeq)}><span className="step-status">{step.outcome === "succeeded" ? "✓" : "•"}</span><span><strong>{step.label}</strong><small>{step.files.join(", ") || "session"}</small></span></button>)}
+        : snapshot.steps.map((step) => <button className={`step-row ${snapshot.currentStepId === step.id ? "selected" : ""}`} key={step.id} onClick={() => void engine.playStep(step.id)}><span className="step-status">{step.outcome === "succeeded" ? "✓" : "•"}</span><span><strong>{step.label}</strong><small>{step.files.join(", ") || "session"}</small></span></button>)}
     </div>
   );
 

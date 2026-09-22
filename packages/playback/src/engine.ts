@@ -28,6 +28,11 @@ export interface PlaybackSnapshot {
 
 export type PlaybackListener = (snapshot: PlaybackSnapshot) => void;
 
+export interface PlaybackEngineOptions {
+  /** Injectable so tests can exercise the animated paths without paying real per-character delays. */
+  sleep?: (milliseconds: number) => Promise<void>;
+}
+
 function clampSpeed(speed: number): number {
   return PLAYBACK_SPEEDS.reduce((closest, candidate) => Math.abs(candidate - speed) < Math.abs(closest - speed) ? candidate : closest, PLAYBACK_SPEEDS[0]);
 }
@@ -49,8 +54,11 @@ export class PlaybackEngine {
   private readonly unsubscribeSource: () => void;
   private disposed = false;
   private caret: { path: string; position: Position } | null = null;
+  private stopAtSeq: number | null = null;
+  private readonly sleepFn: (milliseconds: number) => Promise<void>;
 
-  constructor(private readonly source: EventSource) {
+  constructor(private readonly source: EventSource, options: PlaybackEngineOptions = {}) {
+    this.sleepFn = options.sleep ?? sleep;
     this.unsubscribeSource = source.subscribe(() => {
       for (const resolve of this.appendWaiters) resolve();
       this.appendWaiters.clear();
@@ -115,14 +123,58 @@ export class PlaybackEngine {
   }
 
   async play(): Promise<void> {
-    if (this.runPromise !== null) return this.runPromise;
+    // Pressing play during a bounded run promotes it to unbounded. Otherwise playback would stop at the
+    // end of whichever step was being replayed, for no reason the viewer can see.
+    if (this.runPromise !== null) {
+      this.stopAtSeq = null;
+      return this.runPromise;
+    }
+    return this.startRun(null);
+  }
+
+  /** Plays [fromSeq, toSeq] with typing animation and stops there. */
+  async playRange(fromSeq: number, toSeq: number): Promise<void> {
+    const bound = Math.min(toSeq, this.source.getHeadSeq());
+    // Already positioned means "finish this step" resumes rather than rewinding and re-typing what the
+    // viewer can already see.
+    if (this.state.cursor !== fromSeq - 1) await this.seek(fromSeq - 1);
+    else await this.stopPlayback();
+    if (this.state.cursor >= bound) return;
+    await this.startRun(bound);
+  }
+
+  /** Replays one step from the STEPS list, focusing the file it touches before the typing starts. */
+  async playStep(stepId: string): Promise<void> {
+    const step = this.steps.find((candidate) => candidate.id === stepId);
+    if (step === undefined) return;
+    const bound = Math.min(step.endSeq, this.source.getHeadSeq());
+    if (this.state.cursor !== step.startSeq - 1) await this.seek(step.startSeq - 1);
+    else await this.stopPlayback();
+    // Focus the file this step edits before replaying it, so the viewer does not see the editor cut to
+    // another file mid-step. A step that creates its file has nothing to focus yet, and its own
+    // file_create/file_open will do it.
+    const primary = step.files[0];
+    if (primary !== undefined) this.focusPath(primary);
+    if (this.state.cursor >= bound) return;
+    await this.startRun(bound);
+  }
+
+  private focusPath(path: string): void {
+    if (this.projection.files[path] === undefined) return;
+    if (!this.projection.openPaths.includes(path)) this.projection.openPaths.push(path);
+    this.projection.activePath = path;
+    this.emit();
+  }
+
+  private async startRun(stopAtSeq: number | null): Promise<void> {
     if (this.state.status === "error" || this.state.status === "loading" || this.state.status === "seeking") return;
-    if (!this.source.live && this.state.cursor >= this.state.head) {
+    if (stopAtSeq === null && !this.source.live && this.state.cursor >= this.state.head) {
       this.state = { ...this.state, status: "ended" };
       this.emit();
       return;
     }
     this.pauseRequested = false;
+    this.stopAtSeq = stopAtSeq;
     this.state = playbackReducer(this.state, { type: "play" });
     this.emit();
     this.runPromise = this.runLoop();
@@ -130,6 +182,7 @@ export class PlaybackEngine {
       await this.runPromise;
     } finally {
       this.runPromise = null;
+      this.stopAtSeq = null;
     }
   }
 
@@ -161,9 +214,12 @@ export class PlaybackEngine {
 
   async stepForward(): Promise<void> {
     await this.stopPlayback();
-    const current = this.steps.find((step) => this.state.cursor >= step.startSeq && this.state.cursor <= step.endSeq);
-    const next = current === undefined ? this.steps.find((step) => step.startSeq > this.state.cursor) : current;
-    if (next !== undefined) await this.seek(next.endSeq);
+    // `<` not `<=`: a cursor resting exactly on a step's end used to match that same step, so the seek
+    // was a no-op and every step-forward after the first did nothing at all.
+    const current = this.steps.find((step) => this.state.cursor >= step.startSeq && this.state.cursor < step.endSeq);
+    const target = current ?? this.steps.find((step) => step.startSeq > this.state.cursor);
+    if (target === undefined) return;
+    await this.playRange(Math.max(this.state.cursor + 1, target.startSeq), target.endSeq);
   }
 
   async stepBackward(): Promise<void> {
@@ -239,12 +295,18 @@ export class PlaybackEngine {
   private async runLoop(): Promise<void> {
     try {
       while (!this.pauseRequested) {
+        if (this.stopAtSeq !== null && this.state.cursor >= this.stopAtSeq) break;
         this.refreshHead();
         if (this.state.cursor >= this.state.head) {
-          if (!this.source.live) {
-            this.state = { ...this.state, status: "ended" };
-            this.emit();
-            return;
+          // A bounded run is clamped to the head before it starts, so reaching the head means it is done.
+          // Parking on waitForAppend here would leave a "play this step" hanging on the next live event.
+          if (!this.source.live || this.stopAtSeq !== null) {
+            if (this.stopAtSeq === null) {
+              this.state = { ...this.state, status: "ended" };
+              this.emit();
+              return;
+            }
+            break;
           }
           this.state = { ...this.state, status: "at-live-head" };
           this.emit();
@@ -256,7 +318,9 @@ export class PlaybackEngine {
         }
         await this.applyNext(true);
       }
-      if (this.pauseRequested && this.state.status !== "error") {
+      // A bounded run stops at a step boundary on purpose, so it settles on "paused" rather than
+      // "at-live-head" — the source subscription auto-resumes from that state and would restart it.
+      if (this.state.status !== "error" && this.state.status !== "ended") {
         this.state = { ...this.state, status: "paused" };
         this.emit();
       }
@@ -297,7 +361,7 @@ export class PlaybackEngine {
         const applied = this.projection.files[event.payload.path];
         this.caret = applied === undefined ? null : { path: event.payload.path, position: offsetToPosition(applied, baseOffset + inserted.length) };
         this.emit();
-        await sleep(character.durationMs / this.state.speed);
+        await this.sleepFn(character.durationMs / this.state.speed);
       }
       return;
     }
@@ -309,12 +373,12 @@ export class PlaybackEngine {
         applyProjectionEvent(this.projection, { ...event, payload: { ...event.payload, position: frame.position } });
         this.caret = { path: event.payload.path, position: frame.position };
         this.emit();
-        await sleep(20 / this.state.speed);
+        await this.sleepFn(20 / this.state.speed);
       }
       return;
     }
     applyProjectionEvent(this.projection, event);
-    if (animate) await sleep(Math.max(20, Math.min(140, event.t - (this.events.get(event.seq - 1)?.t ?? event.t))) / this.state.speed);
+    if (animate) await this.sleepFn(Math.max(20, Math.min(140, event.t - (this.events.get(event.seq - 1)?.t ?? event.t))) / this.state.speed);
     this.emit();
   }
 
