@@ -77,6 +77,14 @@ export class WorkspaceRegistry {
     return record;
   }
 
+  // Resolves the workspace an inbound client names, so several projects can share one server without
+  // their edits landing in whichever tree happened to be opened last. Roots are stored realpath'd, so
+  // the lookup canonicalizes too rather than comparing a caller's lexical path against a resolved one.
+  async byRoot(candidate: string): Promise<WorkspaceRecord | undefined> {
+    const target = await fs.realpath(candidate).catch(() => path.resolve(candidate));
+    return [...this.records.values()].find((record) => record.tree.root.canonicalPath === target);
+  }
+
   latest(): WorkspaceRecord {
     const record = [...this.records.values()].at(-1);
     if (record === undefined) throw new Error("no workspace is active");
