@@ -1,4 +1,4 @@
-import type { AnySesEvent } from "@theaihatch/ses/browser";
+import type { AnySesEvent, Position } from "@theaihatch/ses/browser";
 import { offsetToPosition, positionToOffset } from "@theaihatch/ses/browser";
 import { scheduleText, interpolateCursor } from "@theaihatch/typing-sim";
 import { applyProjectionEvent, cloneProjection, emptyProjection, restoreCheckpointFiles, type ProjectionState } from "./projection.js";
@@ -14,6 +14,16 @@ export interface PlaybackSnapshot {
   steps: PlaybackStep[];
   currentStepId: string | null;
   stepsBehind: number;
+  /**
+   * Where the typing caret is right now, so the editor can follow an edit as it animates.
+   *
+   * Deliberately not part of ProjectionState. `seek` rebuilds the projection from a checkpoint and then
+   * replays only UI events, which excludes every edit_*, so a cursor written by an edit would exist on a
+   * linearly played projection and not on a seeked one. That divergence is exactly what the seek/linear
+   * determinism test compares. Keeping the caret out here means animated and instant playback still
+   * produce byte-identical projections, and the caret is a playhead detail rather than session state.
+   */
+  caret: { path: string; position: Position } | null;
 }
 
 export type PlaybackListener = (snapshot: PlaybackSnapshot) => void;
@@ -38,6 +48,7 @@ export class PlaybackEngine {
   private readonly appendWaiters = new Set<() => void>();
   private readonly unsubscribeSource: () => void;
   private disposed = false;
+  private caret: { path: string; position: Position } | null = null;
 
   constructor(private readonly source: EventSource) {
     this.unsubscribeSource = source.subscribe(() => {
@@ -79,6 +90,7 @@ export class PlaybackEngine {
       this.steps = buildStepIndex(range.events);
       this.state = playbackReducer(this.state, { type: "loaded", head });
       this.projection = emptyProjection();
+      this.caret = null;
       this.emit();
     } catch (error) {
       this.fail(error);
@@ -97,7 +109,8 @@ export class PlaybackEngine {
       projection: cloneProjection(this.projection),
       steps: this.steps.map((step) => ({ ...step, files: [...step.files] })),
       currentStepId: currentStep?.id ?? null,
-      stepsBehind: this.steps.filter((step) => step.endSeq > this.state.cursor && step.endSeq <= this.state.head).length
+      stepsBehind: this.steps.filter((step) => step.endSeq > this.state.cursor && step.endSeq <= this.state.head).length,
+      caret: this.caret === null ? null : { path: this.caret.path, position: { ...this.caret.position } }
     };
   }
 
@@ -189,6 +202,9 @@ export class PlaybackEngine {
         applyProjectionEvent(nextProjection, event);
       }
       this.projection = nextProjection;
+      // A seek is not typing, so there is no live caret; the UI falls back to the cursor the stream
+      // recorded, which is what "jump directly to the recorded position" means for a restore.
+      this.caret = null;
       this.steps = buildStepIndex([...this.events.values()].sort((left, right) => left.seq - right.seq));
       this.state = playbackReducer(this.state, { type: "seek-complete", cursor: target, head, live: this.source.live });
       this.emit();
@@ -276,6 +292,10 @@ export class PlaybackEngine {
         const position = offsetToPosition(current, baseOffset + inserted.length);
         applyProjectionEvent(this.projection, { ...event, payload: { ...event.payload, position, text: character.character } });
         inserted += character.character;
+        // Read the caret after the character lands, so it sits after the glyph the viewer just saw
+        // typed rather than one position behind it.
+        const applied = this.projection.files[event.payload.path];
+        this.caret = applied === undefined ? null : { path: event.payload.path, position: offsetToPosition(applied, baseOffset + inserted.length) };
         this.emit();
         await sleep(character.durationMs / this.state.speed);
       }
@@ -284,7 +304,10 @@ export class PlaybackEngine {
     if (event.type === "cursor_move" && animate) {
       const from = this.projection.cursors[event.payload.path] ?? { line: 0, column: 0 };
       for (const frame of interpolateCursor(from, event.payload.position)) {
-        this.projection.cursors[event.payload.path] = frame.position;
+        // Routed through applyProjectionEvent rather than written directly, so the file-present and
+        // tab-open checks run on every frame exactly as they do when the same event is applied instantly.
+        applyProjectionEvent(this.projection, { ...event, payload: { ...event.payload, position: frame.position } });
+        this.caret = { path: event.payload.path, position: frame.position };
         this.emit();
         await sleep(20 / this.state.speed);
       }

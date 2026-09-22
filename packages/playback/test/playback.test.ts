@@ -86,3 +86,50 @@ describe("playback state machine", () => {
     expect(engine.getSnapshot().state.cursor).toBeGreaterThanOrEqual(5);
   });
 });
+
+it("REQ-TYP-005: exposes a caret that advances per character and lands at the end of an insert", async () => {
+  const engine = new PlaybackEngine(new MemoryEventSource(events));
+  await engine.load();
+  const carets: Array<{ path: string; line: number; column: number }> = [];
+  const unsubscribe = engine.subscribe((snapshot) => {
+    if (snapshot.caret !== null) carets.push({ path: snapshot.caret.path, line: snapshot.caret.position.line, column: snapshot.caret.position.column });
+  });
+  engine.setSpeed(32);
+  await engine.seek(3);
+  await engine.stepEventForward();
+  const play = engine.play();
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  engine.pause();
+  await play;
+  unsubscribe();
+
+  expect(carets.length).toBeGreaterThan(5);
+  // The caret sits after the glyph just typed, so it advances rather than repeating one position.
+  const distinct = new Set(carets.map((caret) => `${caret.line}:${caret.column}`));
+  expect(distinct.size).toBeGreaterThan(5);
+
+  // A seek is not typing, so it clears the caret and the UI falls back to the recorded cursor.
+  await engine.seek(3);
+  expect(engine.getSnapshot().caret).toBeNull();
+});
+
+it("REQ-EDT-005: an animated cursor_move validates the same way an instant one does", async () => {
+  const stream: AnySesEvent[] = [
+    { seq: 0, t: 0, type: "workspace_open", payload: { rootName: "demo", canonicalRoot: "/demo" } },
+    { seq: 1, t: 1, type: "cursor_move", payload: { path: "missing.ts", position: { line: 0, column: 0 } } }
+  ];
+
+  // Stepping surfaces the rejection by throwing out of applyNext; only the run loop turns it into state.
+  const instant = new PlaybackEngine(new MemoryEventSource(stream));
+  await instant.load();
+  await instant.stepEventForward();
+  await expect(instant.stepEventForward()).rejects.toThrow("file is not present");
+
+  // Before, the animated branch wrote projection.cursors directly and skipped these checks, so the same
+  // stream errored when stepped but played happily when animated.
+  const animated = new PlaybackEngine(new MemoryEventSource(stream));
+  await animated.load();
+  animated.setSpeed(32);
+  await animated.play();
+  expect(animated.getSnapshot().state.status).toBe("error");
+});
