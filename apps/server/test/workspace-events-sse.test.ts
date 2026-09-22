@@ -38,3 +38,19 @@ it("streams workspace events and app.close does not wait on an attached client",
 });
 
 interface FastifyWorkspaceApp { workspaceRegistry: WorkspaceRegistry; }
+
+it("answers 404 for a workspace id the server no longer has", async () => {
+  const data = await fs.mkdtemp(path.join(os.tmpdir(), "theaihatch-sse-stale-"));
+  directories.push(data);
+  const app = createServer(undefined, "stale-token", undefined, data);
+  await app.listen({ host: "127.0.0.1", port: 0 });
+  try {
+    const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+    // A 500 here closes an EventSource permanently with no retry, so the page stops updating silently.
+    const response = await fetch(`${base}/api/workspaces/a65101c5-8466-402e-a877-07a319a6ac7e/events`);
+    expect(response.status).toBe(404);
+    expect(((await response.json()) as { error: string }).error).toContain("workspace handle is not active");
+  } finally {
+    await app.close();
+  }
+});

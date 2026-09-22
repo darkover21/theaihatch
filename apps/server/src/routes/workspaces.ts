@@ -226,8 +226,15 @@ export function registerWorkspaceRoutes(app: FastifyInstance, registry = new Wor
   });
 
   app.get<{ Params: { id: string }; Querystring: { fromSeq?: string } }>("/api/workspaces/:id/events", async (request, reply) => {
-    const params = workspaceParams.parse(request.params);
-    const record = registry.get(params.id);
+    // A stale id — a workspace closed, or the server restarted under a still-open tab — must answer 404
+    // like every other route. Throwing here produced a 500, which closes an EventSource permanently
+    // with no retry, so the page silently stopped receiving events.
+    let record: WorkspaceRecord;
+    try {
+      record = registry.get(workspaceParams.parse(request.params).id);
+    } catch (error) {
+      return sendError(reply, 404, error);
+    }
     const header = request.headers["last-event-id"];
     const fromHeader = typeof header === "string" && /^\d+$/u.test(header) ? Number(header) + 1 : undefined;
     const fromQuery = request.query.fromSeq !== undefined && /^\d+$/u.test(request.query.fromSeq) ? Number(request.query.fromSeq) : undefined;

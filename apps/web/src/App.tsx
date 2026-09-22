@@ -142,7 +142,7 @@ export default function App() {
   const [theme, setTheme] = useState<"dark" | "light">(() => window.localStorage.getItem("theme") === "light" ? "light" : "dark");
   const [workspace, setWorkspace] = useState<WorkspaceHandle | null>(null);
   const [sessionMode, setSessionMode] = useState<"watch" | "edit">("watch");
-  const { engine, snapshot } = useLiveSession(workspace?.id ?? null, fixture);
+  const { engine, snapshot, connection } = useLiveSession(workspace?.id ?? null, fixture);
   const [workspacePath, setWorkspacePath] = useState("");
   const [workspaceEntries, setWorkspaceEntries] = useState<ExplorerEntry[]>([]);
   const [workspaceDecorations, setWorkspaceDecorations] = useState<Record<string, string>>({});
@@ -416,6 +416,8 @@ export default function App() {
         <div className="workspace-explorer-shell">
           <div className="workspace-opener"><strong>{workspace.rootName}</strong><button onClick={() => void runDemo()}>Run scripted demo</button><button onClick={() => setSessionMode(sessionMode === "watch" ? "edit" : "watch")}>{sessionMode === "watch" ? "Take over" : "Watch"}</button><button onClick={() => { setWorkspace(null); setSessionMode("watch"); }}>Close</button></div>
           <Explorer rootName={workspace.rootName} entries={workspaceEntries} activePath={sessionMode === "watch" ? activePath : workspaceActivePath} decorations={workspaceDecorations} onOpenFile={(path) => sessionMode === "watch" ? void engine.seekFile(path) : void openWorkspaceFile(workspace.id, path, true)} onExpand={async (path) => parseEntries(await responseJson(await fetch(`/api/workspaces/${workspace.id}/tree?${new URLSearchParams({ path }).toString()}`)))} />
+          {connection === "lost" && <div className="error-box" role="alert">Live connection lost — this workspace is no longer open on the server (it may have restarted). Close and open the folder again.</div>}
+          {connection === "reconnecting" && <div className="error-box" role="status">Reconnecting to the live stream…</div>}
           {stepsPanel}
           <ProviderSettings providers={providerSettings} onSelect={(providerId, modelId) => { setSelectedProviderId(providerId); setProviderSettings((providers) => providers.map((provider) => provider.id === providerId ? { ...provider, selectedModel: modelId } : provider)); }} onSaveSecret={saveProviderSecret} onTest={testProvider} />
           <RunPanel running={agentRunning} status={agentStatus} usage={agentUsage} onRun={(options) => void runAgent(options)} onCancel={cancelAgent} />
