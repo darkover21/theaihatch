@@ -4,6 +4,7 @@ import type * as Monaco from "monaco-editor";
 import type { AnySesEvent } from "@theaihatch/ses/browser";
 import { validateSesEvent } from "@theaihatch/ses/browser";
 import { EditorTabs, type EditorTab } from "./features/editor/EditorTabs";
+import { caretDecoration, revealCaret } from "./features/editor/follow";
 import { Explorer, type ExplorerEntry } from "./features/explorer/Explorer";
 import { TerminalPanel, type TerminalEvent } from "./features/terminal/TerminalPanel";
 import { RunPanel, type AgentRunOptions } from "./features/agent/RunPanel";
@@ -167,6 +168,14 @@ export default function App() {
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
   const decorationIds = useRef<string[]>([]);
+  // Attached to every editor. Only the fixture one captured these before, so in workspace mode the ref
+  // was null and neither the diff-marker decorations nor anything else could reach Monaco.
+  const captureEditor = (editor: Monaco.editor.IStandaloneCodeEditor, monaco: typeof Monaco): void => {
+    editorRef.current = editor;
+    monacoRef.current = monaco;
+    // Decoration ids belong to the model that issued them, and a remount brings a new one.
+    decorationIds.current = [];
+  };
   const activePath = snapshot.projection.activePath ?? snapshot.projection.openPaths[0] ?? "";
   const activeContent = activePath === "" ? "" : snapshot.projection.files[activePath] ?? "";
   const isLocked = snapshot.state.status === "playing" || snapshot.state.status === "seeking" || snapshot.state.status === "at-live-head";
@@ -178,17 +187,39 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
+  // The caret the engine reports while typing, falling back to the cursor the stream recorded once a
+  // seek has cleared it — which is what makes a restore land on the recorded position.
+  const followCaret = snapshot.caret !== null && snapshot.caret.path === activePath
+    ? snapshot.caret
+    : activePath === "" || snapshot.projection.cursors[activePath] === undefined
+      ? null
+      : { path: activePath, position: snapshot.projection.cursors[activePath]! };
+
   useEffect(() => {
     const editor = editorRef.current;
     const monaco = monacoRef.current;
     if (editor === null || monaco === null) return;
-    decorationIds.current = editor.deltaDecorations(decorationIds.current, snapshot.projection.diffMarkers
+    const markers: Monaco.editor.IModelDeltaDecoration[] = snapshot.projection.diffMarkers
       .filter((marker) => marker.path === activePath)
       .map((marker) => ({
         range: new monaco.Range(marker.range.start.line + 1, marker.range.start.column + 1, marker.range.end.line + 1, Math.max(marker.range.end.column + 1, marker.range.start.column + 2)),
         options: { isWholeLine: true, linesDecorationsClassName: `ses-diff-${marker.kind}` }
-      })));
-  }, [activePath, snapshot.projection.diffMarkers]);
+      }));
+    if (followCaret !== null) markers.push(caretDecoration(monaco, followCaret));
+    decorationIds.current = editor.deltaDecorations(decorationIds.current, markers);
+  }, [activePath, snapshot.projection.diffMarkers, followCaret]);
+
+  // Runs after the controlled value= prop has updated Monaco's model, because React flushes a child's
+  // effects before its parent's and <Editor> is a child here. Typing emits a snapshot per character and
+  // revealing is idempotent, so a lost race corrects itself on the next one.
+  useEffect(() => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    if (editor === null || monaco === null || followCaret === null) return;
+    if (snapshot.state.status === "seeking") return;
+    const animating = snapshot.state.status === "playing" || snapshot.state.status === "at-live-head";
+    revealCaret(editor, monaco, followCaret, animating ? "smooth" : "instant");
+  }, [followCaret, activeContent, snapshot.state.status]);
 
   async function openWorkspaceFile(id: string, path: string, focus: boolean): Promise<void> {
     const query = new URLSearchParams({ path });
@@ -433,11 +464,11 @@ export default function App() {
         {workspace === null ? (
           <>
             <header className="tab-strip" aria-label="Open files">{snapshot.projection.openPaths.map((path) => <button className={`editor-tab ${activePath === path ? "active" : ""}`} key={path} onClick={() => void engine.seekFile(path)}>{path.split("/").at(-1)} <span className="tab-close" aria-hidden="true">×</span></button>)}<span className="tab-spacer" /><span className="lock-indicator">{isLocked ? "🔒 playback" : "replay"}</span></header>
-            <div className="editor-wrap" data-testid="monaco-surface">{activePath === "" ? <div className="empty-editor">Press play to open the fixture.</div> : <Editor path={activePath} language={languageFor(activePath)} value={activeContent} theme={theme === "dark" ? "vs-dark" : "light"} onMount={(editor, monaco) => { editorRef.current = editor; monacoRef.current = monaco; }} options={{ readOnly: true, minimap: { enabled: true }, lineNumbers: "on", renderLineHighlight: "all", automaticLayout: true, padding: { top: 14 } }} />}</div>
+            <div className="editor-wrap" data-testid="monaco-surface">{activePath === "" ? <div className="empty-editor">Press play to open the fixture.</div> : <Editor path={activePath} language={languageFor(activePath)} value={activeContent} theme={theme === "dark" ? "vs-dark" : "light"} onMount={captureEditor} options={{ readOnly: true, minimap: { enabled: true }, lineNumbers: "on", renderLineHighlight: "all", automaticLayout: true, padding: { top: 14 } }} />}</div>
             <section className="bottom-panel" aria-label="Playback details"><div className="bottom-heading"><span>OUTPUT</span><span className="muted">Fixture session · no provider configured</span></div><pre>{snapshot.projection.terminal || "No terminal events in this walking skeleton."}</pre></section>
           </>
         ) : <>
-          {sessionMode === "watch" ? <><header className="tab-strip" aria-label="Open files">{snapshot.projection.openPaths.map((path) => <button className={`editor-tab ${activePath === path ? "active" : ""}`} key={path} onClick={() => void engine.seekFile(path)}>{path.split("/").at(-1)}</button>)}<span className="tab-spacer" /><span className="lock-indicator">🔒 watch</span></header><div className="editor-wrap" data-testid="monaco-surface">{activePath === "" ? <div className="empty-editor">Waiting for workspace events.</div> : <Editor path={activePath} language={languageFor(activePath)} value={activeContent} theme={theme === "dark" ? "vs-dark" : "light"} options={{ readOnly: true, minimap: { enabled: true }, automaticLayout: true, padding: { top: 14 } }} />}</div><section className="bottom-panel" aria-label="Playback details"><pre>{snapshot.projection.terminal}</pre></section></> : <><EditorTabs tabs={workspaceTabs} activePath={workspaceActivePath} theme={theme} readOnly={false} onFocus={setWorkspaceActivePath} onSave={(path) => void saveWorkspaceFile(path)} onClose={(path) => { setWorkspaceTabs((current) => current.filter((tab) => tab.path !== path)); if (workspaceActivePath === path) setWorkspaceActivePath(null); }} onChange={(path, content) => setWorkspaceTabs((current) => current.map((tab) => tab.path === path ? { ...tab, content, dirty: true } : tab))} /><TerminalPanel {...(() => { const command = workspaceEvents.find((event) => event.type === "terminal_command"); return command?.type === "terminal_command" ? { command: command.payload.command } : {}; })()} events={terminalEvents(workspaceEvents)} collapsed={terminalCollapsed} height={terminalHeight} onToggle={() => setTerminalCollapsed((collapsed) => !collapsed)} onHeightChange={setTerminalHeight} /></>}
+          {sessionMode === "watch" ? <><header className="tab-strip" aria-label="Open files">{snapshot.projection.openPaths.map((path) => <button className={`editor-tab ${activePath === path ? "active" : ""}`} key={path} onClick={() => void engine.seekFile(path)}>{path.split("/").at(-1)}</button>)}<span className="tab-spacer" /><span className="lock-indicator">🔒 watch</span></header><div className="editor-wrap" data-testid="monaco-surface">{activePath === "" ? <div className="empty-editor">Waiting for workspace events.</div> : <Editor path={activePath} language={languageFor(activePath)} value={activeContent} theme={theme === "dark" ? "vs-dark" : "light"} onMount={captureEditor} options={{ readOnly: true, minimap: { enabled: true }, renderLineHighlight: "all", automaticLayout: true, padding: { top: 14 } }} />}</div><section className="bottom-panel" aria-label="Playback details"><pre>{snapshot.projection.terminal}</pre></section></> : <><EditorTabs tabs={workspaceTabs} activePath={workspaceActivePath} theme={theme} readOnly={false} onMount={captureEditor} onFocus={setWorkspaceActivePath} onSave={(path) => void saveWorkspaceFile(path)} onClose={(path) => { setWorkspaceTabs((current) => current.filter((tab) => tab.path !== path)); if (workspaceActivePath === path) setWorkspaceActivePath(null); }} onChange={(path, content) => setWorkspaceTabs((current) => current.map((tab) => tab.path === path ? { ...tab, content, dirty: true } : tab))} /><TerminalPanel {...(() => { const command = workspaceEvents.find((event) => event.type === "terminal_command"); return command?.type === "terminal_command" ? { command: command.payload.command } : {}; })()} events={terminalEvents(workspaceEvents)} collapsed={terminalCollapsed} height={terminalHeight} onToggle={() => setTerminalCollapsed((collapsed) => !collapsed)} onHeightChange={setTerminalHeight} /></>}
         </>}
         <footer className="status-bar"><span>{workspace === null ? snapshot.state.status : "workspace"}</span><span>Ln {workspace === null ? (activePath === "" ? 1 : (snapshot.projection.cursors[activePath]?.line ?? 0) + 1) : 1}, Col {workspace === null ? (activePath === "" ? 1 : (snapshot.projection.cursors[activePath]?.column ?? 0) + 1) : 1}</span><span className="status-grow" /><span>UTF-8</span><span>{workspace === null ? "TypeScript" : "Local project"}</span></footer>
       </section>
