@@ -31,6 +31,7 @@ button { color: inherit; border: 0; cursor: pointer; }
 .tree-file { width: 100%; padding: 7px 16px 7px 28px; text-align: left; background: transparent; color: #9ca9bd; font-size: 13px; }
 .tree-file:hover, .tree-file.selected, .step-row:hover, .step-row.selected { background: #27334a; color: #eef4ff; }
 .step-section { margin-top: 18px; border-top: 1px solid #29313e; }
+.step-empty { margin: 0; padding: 10px 14px; color: #7c899c; font-size: 12px; }
 .step-row { display: flex; gap: 9px; width: 100%; padding: 9px 12px 9px 18px; background: transparent; text-align: left; color: #abb6c8; }
 .step-row strong, .step-row small { display: block; font-size: 12px; font-weight: 500; }
 .step-row small { margin-top: 3px; color: #66748a; font-size: 10px; }

@@ -383,6 +383,17 @@ export default function App() {
   async function saveProviderSecret(providerId: string, secret: string): Promise<void> { await responseJson(await fetch(`/api/providers/${providerId}/secret`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ secret }) })); setProviderSettings((providers) => providers.map((provider) => provider.id === providerId ? { ...provider, configured: true } : provider)); }
   async function testProvider(providerId: string): Promise<string> { const model = providerSettings.find((provider) => provider.id === providerId)?.selectedModel ?? ""; const result = await responseJson(await fetch(`/api/providers/${providerId}/test`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model }) })); return typeof result === "object" && result !== null && "message" in result && typeof result.message === "string" ? result.message : "connection test complete"; }
 
+  // Shared by both shells: a live workspace has steps to show just as a fixture replay does, and before
+  // this it only ever rendered in fixture mode, so the provider panel sat where the step list belonged.
+  const stepsPanel = (
+    <div className="step-section">
+      <div className="panel-heading"><span>STEPS</span><span className="muted">{snapshot.steps.length}</span></div>
+      {snapshot.steps.length === 0
+        ? <p className="step-empty">No steps yet.</p>
+        : snapshot.steps.map((step) => <button className={`step-row ${snapshot.currentStepId === step.id ? "selected" : ""}`} key={step.id} onClick={() => void engine.seek(step.startSeq)}><span className="step-status">{step.outcome === "succeeded" ? "✓" : "•"}</span><span><strong>{step.label}</strong><small>{step.files.join(", ") || "session"}</small></span></button>)}
+    </div>
+  );
+
   return (
     <main className="app-shell">
       <nav className="activity-bar" aria-label="Activity bar">
@@ -399,12 +410,13 @@ export default function App() {
           <div className="workspace-opener"><label htmlFor="workspace-path">Open local folder</label><input id="workspace-path" value={workspacePath} onChange={(event) => setWorkspacePath(event.target.value)} placeholder="/path/to/project" /><button onClick={() => void openWorkspace()}>Open</button></div>
           <div className="tree-root">▾ <span>WALKING-SKELETON</span></div>
           {Object.keys(snapshot.projection.files).sort().map((path) => <button className={`tree-file ${activePath === path ? "selected" : ""}`} key={path} onClick={() => void engine.seekFile(path)}><span>{path.endsWith(".ts") ? "♨" : "▤"}</span> {path}</button>)}
-          <div className="step-section"><div className="panel-heading"><span>STEPS</span><span className="muted">{snapshot.steps.length}</span></div>{snapshot.steps.map((step) => <button className={`step-row ${snapshot.currentStepId === step.id ? "selected" : ""}`} key={step.id} onClick={() => void engine.seek(step.startSeq)}><span className="step-status">{step.outcome === "succeeded" ? "✓" : "•"}</span><span><strong>{step.label}</strong><small>{step.files.join(", ") || "session"}</small></span></button>)}</div>
+          {stepsPanel}
         </aside>
       ) : (
         <div className="workspace-explorer-shell">
           <div className="workspace-opener"><strong>{workspace.rootName}</strong><button onClick={() => void runDemo()}>Run scripted demo</button><button onClick={() => setSessionMode(sessionMode === "watch" ? "edit" : "watch")}>{sessionMode === "watch" ? "Take over" : "Watch"}</button><button onClick={() => { setWorkspace(null); setSessionMode("watch"); }}>Close</button></div>
           <Explorer rootName={workspace.rootName} entries={workspaceEntries} activePath={sessionMode === "watch" ? activePath : workspaceActivePath} decorations={workspaceDecorations} onOpenFile={(path) => sessionMode === "watch" ? void engine.seekFile(path) : void openWorkspaceFile(workspace.id, path, true)} onExpand={async (path) => parseEntries(await responseJson(await fetch(`/api/workspaces/${workspace.id}/tree?${new URLSearchParams({ path }).toString()}`)))} />
+          {stepsPanel}
           <ProviderSettings providers={providerSettings} onSelect={(providerId, modelId) => { setSelectedProviderId(providerId); setProviderSettings((providers) => providers.map((provider) => provider.id === providerId ? { ...provider, selectedModel: modelId } : provider)); }} onSaveSecret={saveProviderSecret} onTest={testProvider} />
           <RunPanel running={agentRunning} status={agentStatus} usage={agentUsage} onRun={(options) => void runAgent(options)} onCancel={cancelAgent} />
           {agentRun !== null && <div className="checkpoint-readout">checkpoint: {agentRun.checkpointId}</div>}
